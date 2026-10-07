@@ -1,0 +1,21 @@
+node_modules/
+dist/
+.output/
+.wxt/
+coverage/
+
+# Secrets — your Anthropic key goes here for the harness
+.env
+.env.*
+!.env.example
+
+# Harness state (agent/environment IDs) and generated homepages
+.agent-state.json
+harness/out/
+
+# Editors / OS
+.vscode/
+.idea/
+.claude/settings.local.json
+.DS_Store
+*.log

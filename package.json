@@ -1,0 +1,19 @@
+{
+  "name": "ai-homepage",
+  "private": true,
+  "packageManager": "pnpm@10.11.1",
+  "scripts": {
+    "build": "pnpm --filter @homepage/extension build",
+    "dev": "pnpm --filter @homepage/extension dev",
+    "typecheck": "pnpm -r typecheck",
+    "test": "bun test harness/",
+    "agent:run": "bun harness/run-agent.ts",
+    "agent:verify": "bun harness/verify-homepage.ts",
+    "agent:resume-test": "bun harness/test-resume.ts crash && bun harness/test-resume.ts resume",
+    "agent:retention": "bun harness/check-retention.ts",
+    "extension:test": "bun harness/test-extension.ts"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  }
+}
