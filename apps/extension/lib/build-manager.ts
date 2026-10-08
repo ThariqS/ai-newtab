@@ -184,7 +184,7 @@ export class BuildManager {
       });
 
       // Persist the raw TSX; the page transpiles it for preview.
-      await saveHomepage(result.code);
+      await saveHomepage(result.code, result.receipt);
 
       this.state = { ...this.state, running: false, phase: "done" };
       this.broadcast({ kind: "done", code: result.code });

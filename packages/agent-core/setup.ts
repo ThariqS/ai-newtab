@@ -27,6 +27,7 @@ export const STORAGE_KEYS = {
   agentVersion: "agentVersion",
   environmentId: "environmentId",
   activeSessionId: "activeSessionId",
+  buildReceipt: "buildReceipt",
   uploadedFileIds: "uploadedFileIds",
 } as const;
 

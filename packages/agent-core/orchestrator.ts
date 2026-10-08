@@ -2,9 +2,10 @@ import type Anthropic from "@anthropic-ai/sdk";
 import { buildHistoryDigest, slugifyUrl } from "./history-digest";
 import { OUTPUT_PATH, buildKickoffMessage } from "./prompt";
 import { DEFAULTS } from "./schemas";
-import { STORAGE_KEYS, ensureAgent, ensureEnvironment, type HomepageModel } from "./setup";
+import { DEFAULT_MODEL, STORAGE_KEYS, ensureAgent, ensureEnvironment, type HomepageModel } from "./setup";
 import type {
   BrowserBridge,
+  BuildReceipt,
   GetHistoryResult,
   GetPageHtmlResult,
   HomepageBuildResult,
@@ -51,6 +52,23 @@ export async function runHomepageBuild(opts: RunOptions): Promise<HomepageBuildR
     log: (l) => callbacks?.onLog?.(l),
   };
 
+  const startedAt = (opts.now ?? new Date()).toISOString();
+  const saved = opts.resumeSessionId
+    ? await store.get<{ sessionId: string; receipt: BuildReceipt }>(STORAGE_KEYS.buildReceipt)
+    : undefined;
+  const receipt: BuildReceipt = saved && saved.sessionId === opts.resumeSessionId
+    ? saved.receipt
+    : {
+        startedAt,
+        finishedAt: "",
+        model: opts.resumeSessionId ? "Unknown" : opts.model ?? DEFAULT_MODEL,
+        historyWindowDays: 0,
+        domainsSent: [],
+        totalSitesSeen: 0,
+        pagesUploaded: [],
+        pagesFailed: [],
+      };
+
   emit.phase("setup");
   const [agentId, environmentId] = await Promise.all([
     ensureAgent(client, store, opts.model),
@@ -70,6 +88,9 @@ export async function runHomepageBuild(opts: RunOptions): Promise<HomepageBuildR
     await store.set(STORAGE_KEYS.activeSessionId, sessionId);
   }
   emit.log(`session=${sessionId}`);
+
+  const saveReceipt = () => store.set(STORAGE_KEYS.buildReceipt, { sessionId, receipt });
+  await saveReceipt();
 
   // Persist upload IDs so cleanup can still find them after a reattach.
   const uploadedFileIds: string[] =
@@ -92,9 +113,15 @@ export async function runHomepageBuild(opts: RunOptions): Promise<HomepageBuildR
       switch (event.name) {
         case "getHistory":
           result = await runGetHistory(event, bridge, emit);
+          receipt.historyWindowDays = result.windowDays;
+          receipt.domainsSent = [...new Set([...receipt.domainsSent, ...result.sites.map((s) => s.domain)])];
+          receipt.totalSitesSeen = result.totalSitesSeen;
+          await saveReceipt();
           break;
         case "getPageHtml":
-          result = await runGetPageHtml(event, { client, bridge, sessionId: sessionId!, rememberUpload, emit });
+          result = await runGetPageHtml(event, {
+            client, bridge, sessionId: sessionId!, rememberUpload, emit, receipt, saveReceipt,
+          });
           break;
         default:
           throw new Error(`Unknown custom tool: ${event.name}`);
@@ -232,14 +259,16 @@ export async function runHomepageBuild(opts: RunOptions): Promise<HomepageBuildR
     emit.phase("writing");
     const code = await collectDeliverable(client, sessionId, finalMessage, emit);
     emit.phase("done");
-    return { code: code.code, sessionId, source: code.source };
+    return { code: code.code, sessionId, source: code.source, receipt };
   } finally {
     // Privacy: the event log holds every domain, title and page body we sent,
     // and uploads persist independently of the session. Delete both, always.
     emit.phase("cleanup");
     await Promise.allSettled(uploadedFileIds.map((id) => client.beta.files.delete(id)));
     await store.remove(STORAGE_KEYS.uploadedFileIds);
-    await deleteSessionWhenSettled(client, sessionId!).catch(() => {});
+    await deleteSessionWhenSettled(client, sessionId!, receipt).catch(() => {});
+    receipt.finishedAt = new Date().toISOString();
+    await store.remove(STORAGE_KEYS.buildReceipt);
     await store.remove(STORAGE_KEYS.activeSessionId);
   }
 }
@@ -272,15 +301,27 @@ async function runGetPageHtml(
     sessionId: string;
     rememberUpload: (id: string) => Promise<void>;
     emit: Emit;
+    receipt: BuildReceipt;
+    saveReceipt: () => Promise<void>;
   },
 ): Promise<GetPageHtmlResult> {
   const input = event.input as { urls: string[]; loadDelayMs?: number };
   ctx.emit.phase("scraping", `${input.urls.length} pages`);
 
-  const { pages, failed } = await ctx.bridge.getPageHtml({
-    urls: input.urls,
-    loadDelayMs: input.loadDelayMs ?? DEFAULTS.loadDelayMs,
-  });
+  let scraped: Awaited<ReturnType<BrowserBridge["getPageHtml"]>>;
+  try {
+    scraped = await ctx.bridge.getPageHtml({
+      urls: input.urls,
+      loadDelayMs: input.loadDelayMs ?? DEFAULTS.loadDelayMs,
+    });
+  } catch (err) {
+    ctx.receipt.pagesFailed.push(...input.urls.map((url) => ({ url, reason: String(err) })));
+    await ctx.saveReceipt();
+    throw err;
+  }
+  const { pages, failed } = scraped;
+  ctx.receipt.pagesFailed.push(...failed);
+  await ctx.saveReceipt();
 
   const refs: PageRef[] = [];
   const mountFailures = [...failed];
@@ -288,10 +329,13 @@ async function runGetPageHtml(
   for (const page of pages) {
     try {
       const filename = `${slugifyUrl(page.url)}_${refs.length}.html`;
+      const bytes = new TextEncoder().encode(page.html).byteLength;
       const upload = await ctx.client.beta.files.upload({
         file: new File([page.html], filename, { type: "text/html" }),
       });
+      ctx.receipt.pagesUploaded.push({ url: page.url, bytes });
       await ctx.rememberUpload(upload.id);
+      await ctx.saveReceipt();
 
       // Mount mid-session, while the session idles awaiting this very result.
       // The API re-roots every mount under /mnt/session/uploads (see below).
@@ -307,11 +351,14 @@ async function runGetPageHtml(
         // The API re-roots every mount under /mnt/session/uploads. Report what it
         // resolved, not what we asked for, or the model greps a path that isn't there.
         mountPath: resource.mount_path,
-        bytes: page.html.length,
+        bytes,
       });
-      ctx.emit.log(`mounted ${page.url} -> ${resource.mount_path} (${page.html.length}b)`);
+      ctx.emit.log(`mounted ${page.url} -> ${resource.mount_path} (${bytes}b)`);
     } catch (err) {
-      mountFailures.push({ url: page.url, reason: `mount failed: ${String(err)}` });
+      const failure = { url: page.url, reason: `mount failed: ${String(err)}` };
+      mountFailures.push(failure);
+      ctx.receipt.pagesFailed.push(failure);
+      await ctx.saveReceipt();
     }
   }
 
@@ -383,10 +430,21 @@ async function collectDeliverable(
  * The stream reports idle slightly before the session's queryable status catches
  * up; deleting immediately intermittently 400s with "cannot delete while running".
  */
-async function deleteSessionWhenSettled(client: Anthropic, sessionId: string): Promise<void> {
+async function deleteSessionWhenSettled(client: Anthropic, sessionId: string, receipt: BuildReceipt): Promise<void> {
   for (let attempt = 0; attempt < 10; attempt++) {
     const session = await client.beta.sessions.retrieve(sessionId);
-    if (session.status !== "running") break;
+    if (session.status !== "running") {
+      const usage = session.usage;
+      if (usage?.input_tokens !== undefined && usage.output_tokens !== undefined) {
+        receipt.usage = {
+          inputTokens: usage.input_tokens,
+          outputTokens: usage.output_tokens,
+          ...(usage.cache_read_input_tokens !== undefined
+            ? { cacheReadInputTokens: usage.cache_read_input_tokens } : {}),
+        };
+      }
+      break;
+    }
     await new Promise((r) => setTimeout(r, 200));
   }
   await client.beta.sessions.delete(sessionId);

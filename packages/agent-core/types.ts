@@ -107,7 +107,20 @@ export interface RunCallbacks {
   onLog?(line: string): void;
 }
 
+export interface BuildReceipt {
+  startedAt: string;
+  finishedAt: string;
+  model: string;
+  historyWindowDays: number;
+  domainsSent: string[];
+  totalSitesSeen: number;
+  pagesUploaded: Array<{ url: string; bytes: number }>;
+  pagesFailed: Array<{ url: string; reason: string }>;
+  usage?: { inputTokens: number; outputTokens: number; cacheReadInputTokens?: number };
+}
+
 export interface HomepageBuildResult {
+  receipt: BuildReceipt;
   code: string;
   sessionId: string;
   /** Where the code came from: a session output file, or a fenced block in the final message. */
