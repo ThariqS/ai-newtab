@@ -1,6 +1,7 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { buildHistoryDigest, slugifyUrl } from "./history-digest";
 import { OUTPUT_PATH, buildKickoffMessage } from "./prompt";
+import { DEFAULT_BLOCKED_SITES, isBlocked, normalizeBlockList } from "./site-filter";
 import { DEFAULTS } from "./schemas";
 import { STORAGE_KEYS, ensureAgent, ensureEnvironment, type HomepageModel } from "./setup";
 import type {
@@ -34,6 +35,11 @@ export interface RunOptions {
   bridge: BrowserBridge;
   store: KVStore;
   userSystemPrompt?: string;
+  /**
+   * Hosts the tools must never read. A getter is re-read before every tool call,
+   * so a list saved mid-build applies to the rest of that build.
+   */
+  blockedSites?: string[] | (() => Promise<string[]>);
   /** Ignored when resuming: the session keeps the agent (and model) it started with. */
   model?: HomepageModel;
   callbacks?: RunCallbacks;
@@ -88,13 +94,16 @@ export async function runHomepageBuild(opts: RunOptions): Promise<HomepageBuildR
    */
   const dispatch = async (event: CustomToolUse): Promise<void> => {
     try {
+      const blockedSites = normalizeBlockList(
+        (typeof opts.blockedSites === "function" ? await opts.blockedSites() : opts.blockedSites) ?? DEFAULT_BLOCKED_SITES,
+      );
       let result: GetHistoryResult | GetPageHtmlResult;
       switch (event.name) {
         case "getHistory":
-          result = await runGetHistory(event, bridge, emit);
+          result = await runGetHistory(event, bridge, emit, blockedSites);
           break;
         case "getPageHtml":
-          result = await runGetPageHtml(event, { client, bridge, sessionId: sessionId!, rememberUpload, emit });
+          result = await runGetPageHtml(event, { client, bridge, sessionId: sessionId!, rememberUpload, emit, blockedSites });
           break;
         default:
           throw new Error(`Unknown custom tool: ${event.name}`);
@@ -252,6 +261,7 @@ async function runGetHistory(
   event: CustomToolUse,
   bridge: BrowserBridge,
   emit: Emit,
+  blockedSites: string[],
 ): Promise<GetHistoryResult> {
   const input = event.input as { daysToAnalyze?: number; maxResults?: number };
   const daysToAnalyze = input.daysToAnalyze ?? DEFAULTS.daysToAnalyze;
@@ -259,7 +269,13 @@ async function runGetHistory(
 
   emit.phase("history", `${daysToAnalyze}d`);
   const { sites, totalSitesSeen } = await bridge.getHistory({ daysToAnalyze, maxResults });
-  const digest = buildHistoryDigest(sites, { daysToAnalyze, maxResults, totalSitesSeen });
+  const allowed = sites.filter((site) => !isBlocked(site.domain, blockedSites));
+  // Blocked domains are dropped from the count too: the model is never told they exist.
+  const digest = buildHistoryDigest(allowed, {
+    daysToAnalyze,
+    maxResults,
+    totalSitesSeen: totalSitesSeen - (sites.length - allowed.length),
+  });
   emit.log(`history: ${digest.sites.length} of ${digest.totalSitesSeen} domains`);
   return digest;
 }
@@ -272,18 +288,39 @@ async function runGetPageHtml(
     sessionId: string;
     rememberUpload: (id: string) => Promise<void>;
     emit: Emit;
+    blockedSites: string[];
   },
 ): Promise<GetPageHtmlResult> {
   const input = event.input as { urls: string[]; loadDelayMs?: number };
   ctx.emit.phase("scraping", `${input.urls.length} pages`);
 
-  const { pages, failed } = await ctx.bridge.getPageHtml({
-    urls: input.urls,
-    loadDelayMs: input.loadDelayMs ?? DEFAULTS.loadDelayMs,
-  });
+  const allowed: string[] = [];
+  const blocked: GetPageHtmlResult["failed"] = [];
+  for (const url of input.urls) {
+    let permitted = false;
+    try {
+      // Match on the URL the browser will load, not on the raw string.
+      const parsed = new URL(url);
+      permitted =
+        (parsed.protocol === "http:" || parsed.protocol === "https:") && !isBlocked(parsed.href, ctx.blockedSites);
+    } catch {
+      // Malformed URLs must never reach the signed-in browser.
+    }
+    if (permitted) allowed.push(url);
+    else blocked.push({ url, reason: "blocked by the user's settings" });
+  }
+  if (blocked.length) ctx.emit.log(`blocked: ${blocked.length} url(s)`);
+
+  // Skip the bridge entirely when nothing is left, so no scraper window opens.
+  const { pages, failed } = allowed.length
+    ? await ctx.bridge.getPageHtml({
+        urls: allowed,
+        loadDelayMs: input.loadDelayMs ?? DEFAULTS.loadDelayMs,
+      })
+    : { pages: [], failed: [] };
 
   const refs: PageRef[] = [];
-  const mountFailures = [...failed];
+  const mountFailures = [...blocked, ...failed];
 
   for (const page of pages) {
     try {
@@ -315,7 +352,7 @@ async function runGetPageHtml(
     }
   }
 
-  if (refs.length === 0 && mountFailures.length > 0) {
+  if (refs.length === 0 && mountFailures.length > 0 && blocked.length === 0) {
     throw new Error(
       `No pages could be mounted. Failures: ${mountFailures
         .map((f) => `${f.url} (${f.reason})`)

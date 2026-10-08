@@ -138,6 +138,11 @@ arrived in the history fetch.
 
 ## Privacy
 
+The editable blocked-sites list is enforced in agent-core's tool handlers, not
+just the prompt: blocked domains are excluded from history digests and their
+counts, and blocked or non-HTTP(S) page requests never reach the browser bridge.
+This checks requested URLs; it does not intercept redirects or subresource loads.
+
 The session event log persists every domain, title and scraped page body server-side
 until deleted, and uploaded files persist independently. `runHomepageBuild` deletes
 both in a `finally`. Confirm retention/ZDR eligibility against current docs before

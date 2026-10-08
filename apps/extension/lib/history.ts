@@ -3,25 +3,15 @@ import type { RawSiteMetadata } from "@homepage/agent-core";
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** Domains seen fewer times than this are noise, not interests. */
 const MIN_VISITS = 2;
-/** Domains that never make good homepage content. */
-const EXCLUDED_DOMAINS = new Set([
-  "localhost",
-  "127.0.0.1",
-  "drive.google.com",
-  "docs.google.com",
-  "sheets.google.com",
-  "slides.google.com",
-]);
 
 /**
- * Read chrome.history, group it by domain, rank by relevance, and return the
- * top `maxResults` plus how many domains there were in total (so the model can
- * be told what it is *not* seeing). Narrowing for the context window happens
- * downstream in agent-core's `buildHistoryDigest`.
+ * Read chrome.history, group it by domain, rank by relevance, and return
+ * all domains so agent-core can exclude blocked sites before counting and
+ * narrowing for the context window in `buildHistoryDigest`.
  */
 export async function getHistorySites(
   daysToAnalyze: number,
-  maxResults: number,
+  _maxResults: number,
 ): Promise<{ sites: RawSiteMetadata[]; totalSitesSeen: number }> {
   const items = await browser.history.search({
     text: "",
@@ -31,7 +21,7 @@ export async function getHistorySites(
 
   const ranked = rank(groupByDomain(items, daysToAnalyze), daysToAnalyze);
   return {
-    sites: ranked.filter((s) => !EXCLUDED_DOMAINS.has(s.domain)).slice(0, Math.max(maxResults, 1)),
+    sites: ranked,
     totalSitesSeen: ranked.length,
   };
 }
@@ -50,7 +40,7 @@ function groupByDomain(
     } catch {
       continue;
     }
-    if (!url.protocol.startsWith("http")) continue; // chrome://, file://, etc.
+    if (url.protocol !== "http:" && url.protocol !== "https:") continue; // chrome://, file://, etc.
 
     const domain = url.hostname.replace(/^www\./, "");
     let site = byDomain.get(domain);

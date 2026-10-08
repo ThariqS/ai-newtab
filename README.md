@@ -75,6 +75,11 @@ over the agent's own defaults. This box sets both the content and the look:
 
 Click **Save & rebuild** to apply them right away.
 
+**Sites the agent never reads.** Enter one host per line; subdomains are included,
+and `*.example.com` is supported. The editable defaults include common webmail,
+sign-in and document hosts. **Save & rebuild** saves the list and applies it to
+history summaries and URLs requested through `getPageHtml`.
+
 **Model.** Choose which Claude model writes your page:
 
 - **Claude Sonnet 5.5** (default): the best balance of quality and cost.
