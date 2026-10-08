@@ -3,11 +3,27 @@ import { HOMEPAGE_SYSTEM_PROMPT } from "./prompt";
 import { GET_HISTORY_SCHEMA, GET_PAGE_HTML_SCHEMA } from "./schemas";
 import type { KVStore } from "./types";
 
+/** Models offered in Settings. The first is the default. */
+export const MODEL_CHOICES = [
+  { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5" },
+  { id: "claude-haiku-5-5", label: "Claude Haiku 5.5" },
+  { id: "claude-opus-5-5", label: "Claude Opus 5.5" },
+] as const;
+
+export type HomepageModel = (typeof MODEL_CHOICES)[number]["id"];
+
+export const DEFAULT_MODEL: HomepageModel = "claude-sonnet-5-5";
+
+/**
+ * An agent is pinned to its model, so each model gets its own cached agent.
+ * Switching back and forth reuses them instead of provisioning a new one per switch.
+ */
+export function agentIdKey(model: HomepageModel): string {
+  return `agentId-${model.replace(/^claude-/, "")}`;
+}
+
 export const STORAGE_KEYS = {
   apiKey: "apiKey",
-  // Model-suffixed so changing the model below provisions a fresh agent
-  // instead of reusing one pinned to the old model.
-  agentId: "agentId-haiku-5-5",
   agentVersion: "agentVersion",
   environmentId: "environmentId",
   activeSessionId: "activeSessionId",
@@ -55,20 +71,25 @@ export async function ensureEnvironment(
   return env.id;
 }
 
-export async function ensureAgent(client: Anthropic, store: KVStore): Promise<string> {
-  const cached = await store.get<string>(STORAGE_KEYS.agentId);
+export async function ensureAgent(
+  client: Anthropic,
+  store: KVStore,
+  model: HomepageModel = DEFAULT_MODEL,
+): Promise<string> {
+  const key = agentIdKey(model);
+  const cached = await store.get<string>(key);
   if (cached) {
     try {
       await client.beta.agents.retrieve(cached);
       return cached;
     } catch {
-      await store.remove(STORAGE_KEYS.agentId);
+      await store.remove(key);
     }
   }
 
   const agent = await client.beta.agents.create({
     name: AGENT_NAME,
-    model: "claude-haiku-5-5",
+    model,
     description: "Builds a personalized homepage from the user's browsing history.",
     system: HOMEPAGE_SYSTEM_PROMPT,
     tools: [
@@ -108,7 +129,7 @@ export async function ensureAgent(client: Anthropic, store: KVStore): Promise<st
     ],
   });
 
-  await store.set(STORAGE_KEYS.agentId, agent.id);
+  await store.set(key, agent.id);
   await store.set(STORAGE_KEYS.agentVersion, agent.version);
   return agent.id;
 }

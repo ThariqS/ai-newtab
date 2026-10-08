@@ -1,9 +1,12 @@
 import { useState } from "react";
+import { MODEL_CHOICES, type HomepageModel } from "@homepage/agent-core";
 import { REBUILD_INTERVAL_CHOICES } from "@/lib/auto-rebuild";
 import { btn } from "./ui";
 
 export function SettingsModal({
   initialPrompt,
+  model,
+  onChangeModel,
   autoRebuild,
   onToggleAutoRebuild,
   intervalHours,
@@ -12,6 +15,8 @@ export function SettingsModal({
   onSave,
 }: {
   initialPrompt: string;
+  model: HomepageModel;
+  onChangeModel: (next: HomepageModel) => void;
   autoRebuild: boolean;
   onToggleAutoRebuild: (next: boolean) => void;
   intervalHours: number;
@@ -51,6 +56,22 @@ export function SettingsModal({
             fontFamily: "inherit",
           }}
         />
+        <label
+          style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 16, color: "#333", fontSize: 14 }}
+        >
+          Model
+          <select
+            value={model}
+            onChange={(e) => onChangeModel(e.target.value as HomepageModel)}
+            style={{ padding: "4px 8px", fontSize: 14, borderRadius: 4, border: "1px solid #ddd" }}
+          >
+            {MODEL_CHOICES.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label}
+              </option>
+            ))}
+          </select>
+        </label>
         <label
           style={{
             display: "flex",

@@ -141,7 +141,7 @@ export class BuildManager {
       return; // single-flight: a second start just attaches.
     }
 
-    const { apiKey, systemPrompt } = await loadSettings();
+    const { apiKey, systemPrompt, model } = await loadSettings();
     if (!apiKey) {
       // Manual builds are gated behind the key-setup screen and auto-builds
       // require a key, so this only happens if the key was removed.
@@ -173,6 +173,7 @@ export class BuildManager {
         bridge: browserBridge,
         store: extensionStore,
         userSystemPrompt: systemPrompt,
+        model,
         resumeSessionId,
         signal: this.controller.signal,
         callbacks: {

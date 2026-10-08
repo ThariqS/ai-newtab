@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { DEFAULT_MODEL, type HomepageModel } from "@homepage/agent-core";
 import { DEFAULT_REBUILD_INTERVAL_HOURS } from "@/lib/auto-rebuild";
 import { BUILD_STEPS } from "@/lib/protocol";
 import { KEYS, extensionStore, loadHomepage, loadSettings, saveSetting } from "@/lib/storage";
@@ -14,6 +15,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [apiKey, setApiKey] = useState<string | null>(null);
   const [systemPrompt, setSystemPrompt] = useState("");
+  const [model, setModel] = useState<HomepageModel>(DEFAULT_MODEL);
   const [autoRebuild, setAutoRebuild] = useState(true);
   const [intervalHours, setIntervalHours] = useState(DEFAULT_REBUILD_INTERVAL_HOURS);
   /** Transpiled homepage, ready for Sandpack. */
@@ -45,6 +47,7 @@ export default function App() {
         ]);
         setApiKey(settings.apiKey);
         setSystemPrompt(settings.systemPrompt);
+        setModel(settings.model);
         setAutoRebuild(settings.autoRebuild);
         setIntervalHours(settings.rebuildIntervalHours ?? DEFAULT_REBUILD_INTERVAL_HOURS);
         setResumable(activeSession ?? null);
@@ -71,7 +74,11 @@ export default function App() {
     [build],
   );
 
-  // Both persist immediately; the worker reads them on its next heartbeat.
+  // These persist immediately; the worker reads them on its next heartbeat or build.
+  const changeModel = useCallback(async (next: HomepageModel) => {
+    setModel(next);
+    await saveSetting("model", next);
+  }, []);
   const toggleAutoRebuild = useCallback(async (next: boolean) => {
     setAutoRebuild(next);
     await saveSetting("autoRebuild", next);
@@ -198,6 +205,8 @@ export default function App() {
       {showSettings && (
         <SettingsModal
           initialPrompt={systemPrompt}
+          model={model}
+          onChangeModel={changeModel}
           autoRebuild={autoRebuild}
           onToggleAutoRebuild={toggleAutoRebuild}
           intervalHours={intervalHours}

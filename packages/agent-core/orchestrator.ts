@@ -2,7 +2,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import { buildHistoryDigest, slugifyUrl } from "./history-digest";
 import { OUTPUT_PATH, buildKickoffMessage } from "./prompt";
 import { DEFAULTS } from "./schemas";
-import { STORAGE_KEYS, ensureAgent, ensureEnvironment } from "./setup";
+import { STORAGE_KEYS, ensureAgent, ensureEnvironment, type HomepageModel } from "./setup";
 import type {
   BrowserBridge,
   GetHistoryResult,
@@ -34,6 +34,8 @@ export interface RunOptions {
   bridge: BrowserBridge;
   store: KVStore;
   userSystemPrompt?: string;
+  /** Ignored when resuming: the session keeps the agent (and model) it started with. */
+  model?: HomepageModel;
   callbacks?: RunCallbacks;
   signal?: AbortSignal;
   /** Reattach to an existing session instead of creating one (e.g. after the host was killed mid-run). */
@@ -51,7 +53,7 @@ export async function runHomepageBuild(opts: RunOptions): Promise<HomepageBuildR
 
   emit.phase("setup");
   const [agentId, environmentId] = await Promise.all([
-    ensureAgent(client, store),
+    ensureAgent(client, store, opts.model),
     ensureEnvironment(client, store),
   ]);
   emit.log(`agent=${agentId} environment=${environmentId}`);
