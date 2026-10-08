@@ -92,6 +92,8 @@ failed build until the next interval, so it never loops.
 
 ## Good to know
 
+- Open “What this build read” beside the build timestamp to see the domains sent, pages uploaded, failures, model, duration, and reported token usage.
+
 - **Cost.** Each build is a single agent session billed to your API key. What it
   costs depends on the model and on how much it reads. Haiku is the cheapest
   choice, and you can turn off automatic rebuilds to build only when you ask.

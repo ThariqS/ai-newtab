@@ -2,9 +2,10 @@ import { useCallback, useEffect, useState } from "react";
 import { DEFAULT_MODEL, type HomepageModel } from "@homepage/agent-core";
 import { DEFAULT_REBUILD_INTERVAL_HOURS } from "@/lib/auto-rebuild";
 import { BUILD_STEPS } from "@/lib/protocol";
-import { KEYS, extensionStore, loadHomepage, loadSettings, saveSetting } from "@/lib/storage";
+import { KEYS, extensionStore, loadHomepage, loadSettings, saveSetting, type Homepage } from "@/lib/storage";
 import { toRenderable } from "@/lib/transpile";
 import { ApiKeySetup } from "./components/ApiKeySetup";
+import { BuildReceipt } from "./components/BuildReceipt";
 import { BuildProgress } from "./components/BuildProgress";
 import { HomepagePreview } from "./components/HomepagePreview";
 import { SettingsModal } from "./components/SettingsModal";
@@ -12,6 +13,8 @@ import { btn, errorBox } from "./components/ui";
 import { useHomepageBuild } from "./useHomepageBuild";
 
 export default function App() {
+  const [homepage, setHomepage] = useState<Homepage>();
+  const [showReceipt, setShowReceipt] = useState(false);
   const [loading, setLoading] = useState(true);
   const [apiKey, setApiKey] = useState<string | null>(null);
   const [systemPrompt, setSystemPrompt] = useState("");
@@ -51,11 +54,24 @@ export default function App() {
         setAutoRebuild(settings.autoRebuild);
         setIntervalHours(settings.rebuildIntervalHours ?? DEFAULT_REBUILD_INTERVAL_HOURS);
         setResumable(activeSession ?? null);
+        setHomepage(homepage);
         if (homepage?.code) setRenderedCode(toRenderable(homepage.code));
       } finally {
         setLoading(false);
       }
     })();
+  }, []);
+
+  useEffect(() => {
+    const changed = (changes: Record<string, { newValue?: unknown }>, area: string) => {
+      if (area === "local" && changes[KEYS.homepage]) {
+        const next = changes[KEYS.homepage].newValue as Homepage | undefined;
+        setHomepage(next);
+        if (next?.code) setRenderedCode(toRenderable(next.code));
+      }
+    };
+    browser.storage.onChanged.addListener(changed);
+    return () => browser.storage.onChanged.removeListener(changed);
   }, []);
 
   const saveKey = useCallback(async (key: string) => {
@@ -201,6 +217,19 @@ export default function App() {
       )}
 
       <HomepagePreview code={renderedCode} />
+      {homepage && (
+        <div style={receiptBar}>
+          Built {new Date(homepage.timestamp).toLocaleString()}
+          {homepage.receipt && (
+            <button style={receiptLink} onClick={() => setShowReceipt(true)}>
+              What this build read
+            </button>
+          )}
+        </div>
+      )}
+      {showReceipt && homepage?.receipt && (
+        <BuildReceipt receipt={homepage.receipt} onClose={() => setShowReceipt(false)} />
+      )}
 
       {showSettings && (
         <SettingsModal
@@ -218,3 +247,24 @@ export default function App() {
     </div>
   );
 }
+
+const receiptBar: React.CSSProperties = {
+  position: "fixed",
+  bottom: 12,
+  left: 12,
+  maxWidth: "calc(100% - 24px)",
+  zIndex: 999,
+  background: "white",
+  padding: "6px 10px",
+  borderRadius: 6,
+  fontSize: 12,
+};
+
+const receiptLink: React.CSSProperties = {
+  ...btn,
+  background: "transparent",
+  color: "#333",
+  padding: "4px 8px",
+  fontSize: 12,
+  textDecoration: "underline",
+};
