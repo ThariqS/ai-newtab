@@ -1,11 +1,13 @@
 # @homepage/extension
 
-The MV3 browser extension (WXT + React). See the [root README](../../README.md)
-for setup and [ARCHITECTURE.md](../../ARCHITECTURE.md) for how it fits together.
+The browser extension (WXT + React): MV3 for Chrome, MV2 for Firefox. See the
+[root README](../../README.md) for setup and [ARCHITECTURE.md](../../ARCHITECTURE.md)
+for how it fits together.
 
 ```bash
-pnpm build       # → .output/chrome-mv3
-pnpm dev         # hot-reload dev build
+pnpm build           # → .output/chrome-mv3
+pnpm build:firefox   # → .output/firefox-mv2
+pnpm dev             # hot-reload dev build (dev:firefox for Firefox)
 pnpm typecheck
 ```
 

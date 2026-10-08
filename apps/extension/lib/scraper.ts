@@ -81,6 +81,12 @@ function cleanHtmlForLLM(html: string) {
 
 /** Scrape in a separate unfocused window so tabs don't flash in front of the user. */
 async function createScraperWindow(): Promise<number> {
+  // Firefox ignores `focused: false` and raises the new window, so remember
+  // which window the user was in and hand focus back to it.
+  const previous = import.meta.env.FIREFOX
+    ? await browser.windows.getLastFocused().catch(() => undefined)
+    : undefined;
+
   const win = await browser.windows.create({
     focused: false,
     state: "normal",
@@ -88,6 +94,10 @@ async function createScraperWindow(): Promise<number> {
     height: 800,
   });
   if (win?.id === undefined) throw new Error("Could not open the scraper window");
+
+  if (previous?.focused && previous.id !== undefined) {
+    await browser.windows.update(previous.id, { focused: true }).catch(() => {});
+  }
   return win.id;
 }
 

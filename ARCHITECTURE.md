@@ -61,6 +61,21 @@ The finished component renders inside a Sandpack iframe
 (`entrypoints/newtab/components/HomepagePreview.tsx`): it is model-written code, so
 it runs sandboxed, not in the extension's own page.
 
+### Firefox
+
+`pnpm build:firefox` builds the same code as a Manifest V2 add-on, WXT's default for
+Firefox. There the "worker" is a persistent background page, so it isn't unloaded
+mid-build: the keepalive is unneeded but harmless, and the alarm heartbeat still
+drives scheduled rebuilds. Two things differ:
+
+- **Firefox ignores `focused: false`** on `windows.create`, so the scraper window
+  would land in front of you. `lib/scraper.ts` notes the window you were in and
+  hands focus back to it (Firefox builds only).
+- **The manifest carries `browser_specific_settings.gecko`** (`wxt.config.ts`): a
+  fixed add-on ID, which an unsigned permanent install needs, and
+  `data_collection_permissions` declaring what leaves the browser (browsing
+  activity and website content, sent to the Anthropic API).
+
 ## Layout
 
 ```
@@ -72,7 +87,7 @@ packages/agent-core/      host-agnostic agent loop — imports no chrome.*, brow
   history-digest.ts       narrows raw history to fit a tool result
   types.ts                BrowserBridge, KVStore, RunPhase, …
 
-apps/extension/           MV3 extension (WXT + React)
+apps/extension/           the extension (WXT + React): MV3 for Chrome, MV2 for Firefox
   entrypoints/
     background.ts         service worker: hosts BuildManager, alarm heartbeat
     scraper.content.ts    injected into scraped tabs: scroll, return HTML
@@ -100,6 +115,7 @@ harness/                  Bun scripts: drive agent-core with a fixture/fetch bri
 | `pnpm agent:resume-test` | A build killed with a tool call pending can be reattached and finished |
 | `pnpm agent:retention <sessionId>` | The session and every uploaded page body are actually deleted |
 | `pnpm extension:test` | In headless Chrome: worker registers, new tab renders, port protocol answers, `chrome.history` reads |
+| `pnpm extension:test:firefox` | In headless Firefox: add-on installs, a new tab opens on it, port protocol answers, `browser.history` reads, the scraper returns page HTML |
 
 The `agent:*` commands need `ANTHROPIC_API_KEY` in `.env` and spend API credits. The
 harness's bridge uses fixture history and a plain `fetch`, so it can't see
