@@ -71,23 +71,14 @@ export async function ensureEnvironment(
   return env.id;
 }
 
-export async function ensureAgent(
-  client: Anthropic,
-  store: KVStore,
-  model: HomepageModel = DEFAULT_MODEL,
-): Promise<string> {
-  const key = agentIdKey(model);
-  const cached = await store.get<string>(key);
-  if (cached) {
-    try {
-      await client.beta.agents.retrieve(cached);
-      return cached;
-    } catch {
-      await store.remove(key);
-    }
-  }
-
-  const agent = await client.beta.agents.create({
+/**
+ * Everything an agent is created from. A cached agent keeps whatever prompt and
+ * tools it was created with, so a fingerprint of this rides along in its
+ * metadata; when the code changes (e.g. after pulling an update), the agent is
+ * updated in place instead of silently running the old definition.
+ */
+function agentDefinition(model: HomepageModel) {
+  return {
     name: AGENT_NAME,
     model,
     description: "Builds a personalized homepage from the user's browsing history.",
@@ -127,7 +118,38 @@ export async function ensureAgent(
         input_schema: GET_PAGE_HTML_SCHEMA,
       },
     ],
-  });
+  } satisfies Anthropic.Beta.AgentCreateParams;
+}
+
+async function fingerprint(definition: object): Promise<string> {
+  const bytes = new TextEncoder().encode(JSON.stringify(definition));
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest).slice(0, 8)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+export async function ensureAgent(
+  client: Anthropic,
+  store: KVStore,
+  model: HomepageModel = DEFAULT_MODEL,
+): Promise<string> {
+  const definition = agentDefinition(model);
+  const metadata = { config: await fingerprint(definition) };
+  const key = agentIdKey(model);
+  const cached = await store.get<string>(key);
+  const existing = cached
+    ? await client.beta.agents.retrieve(cached).catch(() => null)
+    : null;
+  if (existing) {
+    // Outside the retrieve fallback on purpose: a failed update should surface,
+    // not quietly orphan this agent and create a new one every build.
+    if (existing.metadata?.config !== metadata.config) {
+      await client.beta.agents.update(existing.id, { version: existing.version, ...definition, metadata });
+    }
+    return existing.id;
+  }
+  if (cached) await store.remove(key);
+
+  const agent = await client.beta.agents.create({ ...definition, metadata });
 
   await store.set(key, agent.id);
   await store.set(STORAGE_KEYS.agentVersion, agent.version);
