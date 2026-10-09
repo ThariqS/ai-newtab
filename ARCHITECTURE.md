@@ -138,6 +138,11 @@ arrived in the history fetch.
 
 ## Privacy
 
+Bookmarks are read by `lib/bookmarks.ts` in the browser and shown only in the bookmarks
+panel. The model never receives them: `agent-core` does not import that module, and the
+build prompt contains no bookmark data. The `bookmarks` permission is used for this
+panel alone.
+
 The session event log persists every domain, title and scraped page body server-side
 until deleted, and uploaded files persist independently. `runHomepageBuild` deletes
 both in a `finally`. Confirm retention/ZDR eligibility against current docs before

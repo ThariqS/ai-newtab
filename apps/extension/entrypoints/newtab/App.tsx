@@ -5,6 +5,7 @@ import { BUILD_STEPS } from "@/lib/protocol";
 import { KEYS, extensionStore, loadHomepage, loadSettings, saveSetting } from "@/lib/storage";
 import { toRenderable } from "@/lib/transpile";
 import { ApiKeySetup } from "./components/ApiKeySetup";
+import { BookmarksPanel } from "./components/BookmarksPanel";
 import { BuildProgress } from "./components/BuildProgress";
 import { HomepagePreview } from "./components/HomepagePreview";
 import { SettingsModal } from "./components/SettingsModal";
@@ -18,6 +19,9 @@ export default function App() {
   const [model, setModel] = useState<HomepageModel>(DEFAULT_MODEL);
   const [autoRebuild, setAutoRebuild] = useState(true);
   const [intervalHours, setIntervalHours] = useState(DEFAULT_REBUILD_INTERVAL_HOURS);
+  const [bookmarksEnabled, setBookmarksEnabled] = useState(true);
+  const [excludedFolderIds, setExcludedFolderIds] = useState<string[]>([]);
+  const [showBookmarks, setShowBookmarks] = useState(false);
   /** Transpiled homepage, ready for Sandpack. */
   const [renderedCode, setRenderedCode] = useState<string | null>(null);
   /** A session left mid-flight, offered as "Resume interrupted build". */
@@ -50,6 +54,8 @@ export default function App() {
         setModel(settings.model);
         setAutoRebuild(settings.autoRebuild);
         setIntervalHours(settings.rebuildIntervalHours ?? DEFAULT_REBUILD_INTERVAL_HOURS);
+        setBookmarksEnabled(settings.bookmarksEnabled);
+        setExcludedFolderIds(settings.bookmarkExcludedFolderIds);
         setResumable(activeSession ?? null);
         if (homepage?.code) setRenderedCode(toRenderable(homepage.code));
       } finally {
@@ -87,6 +93,15 @@ export default function App() {
     setIntervalHours(next);
     await saveSetting("rebuildIntervalHours", next);
   }, []);
+  const toggleBookmarks = useCallback(async (next: boolean) => {
+    setBookmarksEnabled(next);
+    if (!next) setShowBookmarks(false);
+    await saveSetting("bookmarksEnabled", next);
+  }, []);
+  const changeExcludedFolders = useCallback(async (next: string[]) => {
+    setExcludedFolderIds(next);
+    await saveSetting("bookmarkExcludedFolderIds", next);
+  }, []);
 
   if (loading) return <div style={{ padding: 20, textAlign: "center" }}>Loading…</div>;
   if (!apiKey) return <ApiKeySetup onSave={saveKey} />;
@@ -122,7 +137,15 @@ export default function App() {
               Resume interrupted build
             </button>
           )}
+          {bookmarksEnabled && (
+            <button style={{ ...btn, backgroundColor: "#555" }} onClick={() => setShowBookmarks(true)}>
+              ☆ Bookmarks
+            </button>
+          )}
         </div>
+        {showBookmarks && (
+          <BookmarksPanel excludedFolderIds={excludedFolderIds} onClose={() => setShowBookmarks(false)} />
+        )}
       </div>
     );
   }
@@ -159,7 +182,16 @@ export default function App() {
         <button style={btn} onClick={() => setShowSettings(true)} title="Customize homepage">
           ⚙️ Settings
         </button>
+        {bookmarksEnabled && (
+          <button style={btn} onClick={() => setShowBookmarks(true)} title="Show bookmarks">
+            ☆ Bookmarks
+          </button>
+        )}
       </div>
+
+      {showBookmarks && (
+        <BookmarksPanel excludedFolderIds={excludedFolderIds} onClose={() => setShowBookmarks(false)} />
+      )}
 
       {showError && (
         <div
@@ -211,6 +243,10 @@ export default function App() {
           onToggleAutoRebuild={toggleAutoRebuild}
           intervalHours={intervalHours}
           onChangeInterval={changeInterval}
+          bookmarksEnabled={bookmarksEnabled}
+          onToggleBookmarks={toggleBookmarks}
+          excludedFolderIds={excludedFolderIds}
+          onChangeExcludedFolders={changeExcludedFolders}
           onClose={() => setShowSettings(false)}
           onSave={savePrompt}
         />

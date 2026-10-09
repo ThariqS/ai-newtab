@@ -21,6 +21,10 @@ export const KEYS = {
   /** ISO timestamp of the last auto-build *attempted* (success or not). */
   lastAutoBuildAttempt: "lastAutoBuildAttempt",
   rebuildIntervalHours: "autoRebuildIntervalHours",
+  /** Unset means on: the bookmarks button shows by default. */
+  bookmarksEnabled: "bookmarksEnabled",
+  /** Top-level bookmark folder ids the user hid from the panel. Unset means none hidden. */
+  bookmarkExcludedFolderIds: "bookmarkExcludedFolderIds",
   /** Throttled mirror of the live build state, for tabs that open while the worker sleeps. */
   buildSnapshot: "buildSnapshot",
 } as const;
@@ -39,6 +43,8 @@ export interface Settings {
   /** Unset means on — auto-rebuild is opt-out. */
   autoRebuild: boolean;
   rebuildIntervalHours: number | null;
+  bookmarksEnabled: boolean;
+  bookmarkExcludedFolderIds: string[];
 }
 
 /** The `KVStore` agent-core persists its agent/environment/session IDs through. */
@@ -62,6 +68,8 @@ export async function loadSettings(): Promise<Settings> {
     KEYS.model,
     KEYS.autoRebuild,
     KEYS.rebuildIntervalHours,
+    KEYS.bookmarksEnabled,
+    KEYS.bookmarkExcludedFolderIds,
   ]);
   const model = s[KEYS.model] as string | undefined;
   return {
@@ -71,10 +79,21 @@ export async function loadSettings(): Promise<Settings> {
     model: MODEL_CHOICES.find((m) => m.id === model)?.id ?? DEFAULT_MODEL,
     autoRebuild: s[KEYS.autoRebuild] !== false,
     rebuildIntervalHours: (s[KEYS.rebuildIntervalHours] as number | undefined) ?? null,
+    bookmarksEnabled: s[KEYS.bookmarksEnabled] !== false,
+    bookmarkExcludedFolderIds: (s[KEYS.bookmarkExcludedFolderIds] as string[] | undefined) ?? [],
   };
 }
 
-export async function saveSetting<K extends "apiKey" | "systemPrompt" | "model" | "autoRebuild" | "rebuildIntervalHours">(
+export async function saveSetting<
+  K extends
+    | "apiKey"
+    | "systemPrompt"
+    | "model"
+    | "autoRebuild"
+    | "rebuildIntervalHours"
+    | "bookmarksEnabled"
+    | "bookmarkExcludedFolderIds",
+>(
   key: K,
   value: Settings[K],
 ): Promise<void> {
