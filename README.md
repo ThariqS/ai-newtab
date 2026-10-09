@@ -78,7 +78,7 @@ Click **Save & rebuild** to apply them right away.
 **Model.** Choose which Claude model writes your page:
 
 - **Claude Sonnet 5.5** (default): the best balance of quality and cost.
-- **Claude Haiku 5.5**: the fastest and cheapest.
+- **Claude Haiku 4.5**: the fastest and cheapest.
 - **Claude Opus 5.5**: the most careful editor, and the most expensive.
 
 The new model takes effect from your next build.

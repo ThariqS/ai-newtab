@@ -6,7 +6,7 @@ import type { KVStore } from "./types";
 /** Models offered in Settings. The first is the default. */
 export const MODEL_CHOICES = [
   { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5" },
-  { id: "claude-haiku-5-5", label: "Claude Haiku 5.5" },
+  { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
   { id: "claude-opus-5-5", label: "Claude Opus 5.5" },
 ] as const;
 
