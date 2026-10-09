@@ -239,7 +239,11 @@ export async function runHomepageBuild(opts: RunOptions): Promise<HomepageBuildR
     emit.phase("cleanup");
     await Promise.allSettled(uploadedFileIds.map((id) => client.beta.files.delete(id)));
     await store.remove(STORAGE_KEYS.uploadedFileIds);
-    await deleteSessionWhenSettled(client, sessionId!).catch(() => {});
+    if (sessionId) {
+      await deleteSessionWhenSettled(client, sessionId).catch((err) =>
+        emit.log(`session ${sessionId} was not deleted: ${String(err)}`),
+      );
+    }
     await store.remove(STORAGE_KEYS.activeSessionId);
   }
 }
@@ -380,14 +384,25 @@ async function collectDeliverable(
 }
 
 /**
- * The stream reports idle slightly before the session's queryable status catches
- * up; deleting immediately intermittently 400s with "cannot delete while running".
+ * A running session can't be deleted ("cannot delete while running"). After a
+ * normal finish that's only the brief lag between the stream's idle and the
+ * queryable status. After a cancel or error the agent is still mid-turn, so it
+ * gets interrupted and has to reach a safe boundary before it goes idle.
  */
+const SETTLE_POLLS_BEFORE_INTERRUPT = 10;
+const INTERRUPT_DEADLINE_MS = 60_000;
+
 async function deleteSessionWhenSettled(client: Anthropic, sessionId: string): Promise<void> {
-  for (let attempt = 0; attempt < 10; attempt++) {
+  const deadline = Date.now() + INTERRUPT_DEADLINE_MS;
+  let interrupted = false;
+  for (let attempt = 0; Date.now() < deadline; attempt++) {
     const session = await client.beta.sessions.retrieve(sessionId);
     if (session.status !== "running") break;
-    await new Promise((r) => setTimeout(r, 200));
+    if (!interrupted && attempt >= SETTLE_POLLS_BEFORE_INTERRUPT) {
+      await client.beta.sessions.events.send(sessionId, { events: [{ type: "user.interrupt" }] });
+      interrupted = true;
+    }
+    await new Promise((r) => setTimeout(r, interrupted ? 1000 : 200));
   }
   await client.beta.sessions.delete(sessionId);
 }
