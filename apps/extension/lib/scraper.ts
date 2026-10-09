@@ -14,6 +14,7 @@ interface ScrapeOptions {
   maxRetries?: number; // Maximum number of retry attempts
   retryDelay?: number; // Initial retry delay in ms
   timeout?: number; // Maximum time to wait for a page in ms
+  injectTimeout?: number; // Maximum time for the injected scraper to return, in ms
   concurrentTabs?: number; // Number of tabs to process concurrently
 }
 
@@ -22,6 +23,9 @@ const DEFAULT_OPTIONS: Required<ScrapeOptions> = {
   maxRetries: 3,
   retryDelay: 1000, // 1 second initial retry delay
   timeout: 30000, // 30 seconds timeout
+  // The content script stops scrolling after 15s; the rest is headroom for
+  // hidden-tab timer throttling. Without this, one stuck page stalls the build.
+  injectTimeout: 30000,
   concurrentTabs: 3, // Process up to 3 tabs at once
 };
 
@@ -124,10 +128,14 @@ async function scrapeUrl(
     while (retryCount <= opts.maxRetries && !result) {
       try {
         // Scrolls to trigger lazy content, then returns { title, html }.
-        const injectionResults = await browser.scripting.executeScript({
-          target: { tabId: tab.id! },
-          files: ["/content-scripts/scraper.js"],
-        });
+        const injectionResults = await withTimeout(
+          browser.scripting.executeScript({
+            target: { tabId: tab.id! },
+            files: ["/content-scripts/scraper.js"],
+          }),
+          opts.injectTimeout,
+          `scraper script did not return within ${opts.injectTimeout}ms`
+        );
 
         if (
           injectionResults &&
@@ -144,6 +152,8 @@ async function scrapeUrl(
         }
       } catch (error) {
         console.warn(`Attempt ${retryCount + 1} failed for ${url}:`, error);
+        // A page that hung once will hang again; retrying only multiplies the wait.
+        if (error instanceof TimeoutError) break;
 
         if (retryCount < opts.maxRetries) {
           // Wait before retry with exponential backoff
@@ -216,6 +226,17 @@ export async function scrapeUrls(
   }
 
   return { pages, failed };
+}
+
+class TimeoutError extends Error {}
+
+/** Reject after `ms`. The underlying promise keeps running; closing the tab settles it. */
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new TimeoutError(message)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timeoutId));
 }
 
 async function waitForTabLoad(
