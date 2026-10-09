@@ -124,7 +124,18 @@ belongs to `user.tool_confirmation` and `user.tool_result`.)
 
 **Never leave an `agent.custom_tool_use` unanswered.** Every path out of the handler
 must send a result — a thrown error becomes a result with `is_error: true`, never a
-reason to skip the send. An unanswered tool call idles the session forever.
+reason to skip the send. An unanswered tool call idles the session forever. If the send
+itself fails, the result is kept and resent after the stream reconnects.
+
+**The event stream drops during long tool calls.** Nothing reads it while `getPageHtml`
+scrapes for minutes. On a dropped or closed stream the orchestrator reopens it, replays
+history, and re-answers orphaned tool calls instead of failing the build (up to 5
+consecutive attempts).
+
+**Scraping is bounded per page.** Scraper tabs are hidden, so Chrome throttles their
+timers (≥1s, then ~1/min after 5 minutes). The injected scroll stops after 15s and
+`executeScript` has a 30s hard timeout; a page that exceeds it is reported in `failed`
+rather than stalling the whole batch.
 
 **Don't break on `session.status_idle` alone.** The session idles every time it waits
 for a tool result. Break only on `status_terminated`, or on `status_idle` where
