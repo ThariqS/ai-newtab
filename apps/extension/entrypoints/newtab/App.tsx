@@ -235,6 +235,7 @@ export default function App() {
       )}
 
       <HomepagePreview code={renderedCode} />
+      {bookmarksEnabled && <ShortcutTiles excludedFolderIds={excludedFolderIds} floating />}
 
       {showSettings && (
         <SettingsModal

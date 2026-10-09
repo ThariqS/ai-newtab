@@ -15,7 +15,7 @@ const CHROME =
   process.env.CHROME_PATH ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const EXT = join(import.meta.dir, "../apps/extension/.output/chrome-mv3");
 const PORT = 9334;
-const SHOT = join(import.meta.dir, "../cache-bookmarks-panel.png");
+const SHOT = join(process.env.SHOT_DIR ?? tmpdir(), "bookmarks-panel.png");
 
 if (!existsSync(join(EXT, "manifest.json"))) {
   console.error(`No build at ${EXT}. Run: pnpm build`);

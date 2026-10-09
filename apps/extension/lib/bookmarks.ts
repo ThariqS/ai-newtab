@@ -108,9 +108,3 @@ export async function addShortcut(title: string, url: string): Promise<void> {
   if (!bar) throw new Error("No Bookmarks bar was found.");
   await bookmarksApi().create({ parentId: bar.id, title: title.trim() || parsed.hostname, url: parsed.href });
 }
-
-/** Chrome's own icon cache for a page. Needs the "favicon" permission; no request leaves the browser. */
-export function faviconUrl(pageUrl: string): string {
-  const runtime = (globalThis as unknown as { browser: { runtime: { getURL(p: string): string } } }).browser.runtime;
-  return runtime.getURL(`/_favicon/?pageUrl=${encodeURIComponent(pageUrl)}&size=64`);
-}

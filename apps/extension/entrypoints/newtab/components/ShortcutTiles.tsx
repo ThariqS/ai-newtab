@@ -1,14 +1,30 @@
 import { useEffect, useState, type CSSProperties } from "react";
-import { addShortcut, faviconUrl, getShortcuts, type Shortcut } from "@/lib/bookmarks";
+import { addShortcut, getShortcuts, type Shortcut } from "@/lib/bookmarks";
 import { btn } from "./ui";
 
 const MAX_TILES = 8;
 
 /**
- * Row of shortcut tiles, one per bookmark, with the site icon. The last tile
- * adds a new bookmark to the Bookmarks bar. Shown on the default new-tab view.
+ * Icon sources for a tile. Only the site's own /favicon.ico is used. When it
+ * is missing, the tile shows the first letter instead. Chrome's cache is not
+ * used here: for sites it does not know, it returns a generic globe.
  */
-export function ShortcutTiles({ excludedFolderIds }: { excludedFolderIds: string[] }) {
+function iconSources(pageUrl: string): string[] {
+  return [new URL("/favicon.ico", pageUrl).href];
+}
+
+/**
+ * Row of shortcut tiles, one per bookmark, with the site icon. The last tile
+ * adds a new bookmark to the Bookmarks bar. With `floating`, the row sits as a
+ * strip at the bottom of the screen, over the generated homepage.
+ */
+export function ShortcutTiles({
+  excludedFolderIds,
+  floating = false,
+}: {
+  excludedFolderIds: string[];
+  floating?: boolean;
+}) {
   const [shortcuts, setShortcuts] = useState<Shortcut[]>([]);
   const [version, setVersion] = useState(0);
   const [adding, setAdding] = useState(false);
@@ -23,7 +39,7 @@ export function ShortcutTiles({ excludedFolderIds }: { excludedFolderIds: string
   }, [excludedKey, version]);
 
   return (
-    <div style={{ marginTop: 32 }}>
+    <div style={floating ? floatingBox : { marginTop: 32 }}>
       <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 20 }}>
         {shortcuts.map((s) => (
           <Tile key={s.id} shortcut={s} />
@@ -53,21 +69,22 @@ export function ShortcutTiles({ excludedFolderIds }: { excludedFolderIds: string
 }
 
 function Tile({ shortcut }: { shortcut: Shortcut }) {
-  const [iconFailed, setIconFailed] = useState(false);
+  const sources = iconSources(shortcut.url);
+  const [stage, setStage] = useState(0);
   const letter = (shortcut.title || shortcut.url).trim().charAt(0).toUpperCase() || "?";
 
   return (
     <a href={shortcut.url} title={shortcut.url} data-shortcut="" style={tileBase}>
       <span style={iconCircle}>
-        {iconFailed ? (
+        {stage >= sources.length ? (
           letter
         ) : (
           <img
-            src={faviconUrl(shortcut.url)}
+            src={sources[stage]}
             width={28}
             height={28}
             alt=""
-            onError={() => setIconFailed(true)}
+            onError={() => setStage((s) => s + 1)}
             style={{ borderRadius: 4 }}
           />
         )}
@@ -130,6 +147,20 @@ function AddForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => voi
     </div>
   );
 }
+
+const floatingBox: CSSProperties = {
+  position: "fixed",
+  bottom: 16,
+  left: "50%",
+  transform: "translateX(-50%)",
+  zIndex: 998,
+  maxWidth: "94vw",
+  boxSizing: "border-box",
+  padding: "12px 18px",
+  borderRadius: 16,
+  background: "rgba(255, 255, 255, 0.94)",
+  boxShadow: "0 6px 24px rgba(0, 0, 0, 0.18)",
+};
 
 const tileBase: CSSProperties = {
   display: "flex",

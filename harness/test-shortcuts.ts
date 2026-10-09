@@ -1,9 +1,11 @@
 /**
- * Checks the default new-tab view end to end in headless Chrome: shortcut tiles
- * for bookmarks on the Bookmarks bar, a site icon per tile, and the Add shortcut
- * form saving a new bookmark. No API calls are made.
+ * Checks shortcut tiles end to end in headless Chrome: tiles for the Bookmarks
+ * bar links, the site icon (or letter fallback), the Add shortcut form saving a
+ * new bookmark, refusal of a javascript: address, and the tiles on the
+ * homepage view. No API calls are made.
  *
  * Run: pnpm build && bun harness/test-shortcuts.ts
+ * Screenshots go to SHOT_DIR (default: the system temp dir).
  */
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -78,6 +80,9 @@ async function cdp(wsUrl: string) {
   };
 }
 
+/** The visible label of each tile: the last <span>, which excludes the icon or letter circle. */
+const TILE_LABELS = `[...document.querySelectorAll("a[data-shortcut]")].map((a) => a.querySelector("span:last-child").textContent.trim())`;
+
 try {
   let version: any;
   for (let i = 0; i < 80 && !version; i++) {
@@ -101,13 +106,13 @@ try {
   }
   check("service worker registered", Boolean(sw));
 
-  // Seed two bookmarks on the Bookmarks bar.
+  // Seed two bookmarks on the Bookmarks bar. GitHub and YouTube serve a real favicon.ico.
   const worker = await cdp(sw.webSocketDebuggerUrl);
   await worker.send("Runtime.enable");
   await worker.evaluate(`(async () => {
     const bar = (await chrome.bookmarks.getTree())[0].children[0];
-    await chrome.bookmarks.create({ parentId: bar.id, title: "Alpha Site", url: "https://example.com/" });
-    await chrome.bookmarks.create({ parentId: bar.id, title: "Beta Site", url: "https://example.org/" });
+    await chrome.bookmarks.create({ parentId: bar.id, title: "Alpha Site", url: "https://github.com/" });
+    await chrome.bookmarks.create({ parentId: bar.id, title: "Beta Site", url: "https://www.youtube.com/" });
     return true;
   })()`);
   worker.close();
@@ -124,42 +129,44 @@ try {
   await page.send("Page.reload");
   await sleep(2500);
 
-  const tiles: string[] = await page.evaluate(
-    `[...document.querySelectorAll("a[data-shortcut]")].map((a) => a.textContent.trim())`,
-  );
-  check("tiles show the Bookmarks bar links", tiles.includes("Alpha Site") && tiles.includes("Beta Site"), tiles.join(", "));
+  const tiles: string[] = await page.evaluate(TILE_LABELS);
+  check("tiles show the Bookmarks bar links", tiles.join("|") === "Alpha Site|Beta Site", tiles.join(", "));
   check("an Add shortcut tile is shown", (await page.evaluate(`document.body.innerText.includes("Add shortcut")`)) === true);
 
-  const iconOk: boolean = await page.evaluate(`(() => {
-    const imgs = [...document.querySelectorAll("a[data-shortcut] img")];
-    return imgs.length > 0;
-  })()`);
-  check("tiles render an icon image", iconOk);
-
-  // Add a shortcut through the form.
+  // Add a shortcut for a site with no favicon.ico. Its tile must show the letter, and the label stays exact.
   await page.evaluate(`[...document.querySelectorAll("button")].find((b) => b.title === "Add shortcut").click()`);
   await sleep(300);
   await page.evaluate(`(() => {
-    const set = (el, v) => { const s = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set; s.call(el, v); el.dispatchEvent(new Event("input", { bubbles: true })); };
-    set(document.querySelector('input[placeholder="Name"]'), "Gamma Site");
-    set(document.querySelector('input[placeholder="https://example.com"]'), "https://example.net/");
+    const setField = (el, v) => {
+      const s = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+      s.call(el, v);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    setField(document.querySelector('input[placeholder="Name"]'), "Gamma Site");
+    setField(document.querySelector('input[placeholder="https://example.com"]'), "https://example.net/");
   })()`);
   await sleep(200);
   await page.evaluate(`[...document.querySelectorAll("button")].find((b) => b.textContent.trim() === "Save").click()`);
-  await sleep(1200);
+  await sleep(2000);
 
-  const after: string[] = await page.evaluate(
-    `[...document.querySelectorAll("a[data-shortcut]")].map((a) => a.textContent.trim())`,
+  const after: string[] = await page.evaluate(TILE_LABELS);
+  check(
+    "new shortcut appears with its exact name",
+    after.join("|") === "Alpha Site|Beta Site|Gamma Site",
+    after.join(", "),
   );
-  check("new shortcut appears after saving", after.includes("Gamma Site"), after.join(", "));
 
   // A javascript: address must be rejected by the form.
   await page.evaluate(`[...document.querySelectorAll("button")].find((b) => b.title === "Add shortcut").click()`);
   await sleep(300);
   await page.evaluate(`(() => {
-    const set = (el, v) => { const s = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set; s.call(el, v); el.dispatchEvent(new Event("input", { bubbles: true })); };
-    set(document.querySelector('input[placeholder="Name"]'), "Bad");
-    set(document.querySelector('input[placeholder="https://example.com"]'), "javascript:alert(1)");
+    const setField = (el, v) => {
+      const s = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+      s.call(el, v);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    setField(document.querySelector('input[placeholder="Name"]'), "Bad");
+    setField(document.querySelector('input[placeholder="https://example.com"]'), "javascript:alert(1)");
   })()`);
   await sleep(200);
   await page.evaluate(`[...document.querySelectorAll("button")].find((b) => b.textContent.trim() === "Save").click()`);
@@ -167,8 +174,35 @@ try {
   const errText: string = await page.evaluate(`document.body.innerText`);
   check("javascript: address is refused", errText.includes("must start with http or https"));
 
+  // Phase 2: a built homepage exists. The shortcut strip must still show, at the bottom.
+  const homeCode = `import React from 'react';
+export default function PersonalizedHomepage() {
+  return <div style={{ padding: 40, fontFamily: 'system-ui' }}><h1>Test homepage</h1><p>Body text.</p></div>;
+}`;
+  await page.evaluate(`chrome.storage.local.set({ homepageData: { code: ${JSON.stringify(homeCode)}, timestamp: new Date().toISOString() } })`);
+  await page.send("Page.reload");
+  await sleep(3000);
+
+  // The homepage renders in a Sandpack iframe, so its text is not in this document.
+  check("homepage view renders (preview iframe present)", (await page.evaluate(`document.querySelectorAll("iframe").length > 0`)) === true);
+  const strip: { ok: boolean; bottom: number; vh: number } = await page.evaluate(`(() => {
+    const a = document.querySelector("a[data-shortcut]");
+    if (!a) return { ok: false, bottom: 0, vh: innerHeight };
+    const r = a.getBoundingClientRect();
+    return { ok: r.height > 0, bottom: r.bottom, vh: innerHeight };
+  })()`);
+  check("shortcut tiles show on the homepage view", strip.ok);
+  check("tiles sit in the bottom strip", strip.ok && strip.bottom > strip.vh * 0.5, `bottom ${Math.round(strip.bottom)} of ${strip.vh}`);
+
+  // GitHub's tile must show a real image, not the letter fallback.
+  const icon: { src: string; w: number } = await page.evaluate(`(() => {
+    const img = document.querySelector("a[data-shortcut] img");
+    return img ? { src: img.src, w: img.naturalWidth } : { src: "", w: 0 };
+  })()`);
+  check("tile icon is the site's own favicon.ico", icon.src.endsWith("/favicon.ico") && icon.w > 16, `${icon.src} natural width ${icon.w}`);
+
   const shot = await page.send("Page.captureScreenshot", { format: "png" });
-  const shotPath = join(OUT, "shortcuts-default.png");
+  const shotPath = join(OUT, "shortcuts-homepage.png");
   writeFileSync(shotPath, Buffer.from(shot.result.data, "base64"));
   console.log(`screenshot: ${shotPath}`);
 
