@@ -29,6 +29,13 @@ interface BookmarkNode {
 /** The one bookmarks call this module makes. Typed here so it compiles outside the extension build too. */
 interface BookmarksApi {
   getTree(): Promise<BookmarkNode[]>;
+  create(node: { parentId: string; title: string; url: string }): Promise<unknown>;
+}
+
+export interface Shortcut {
+  id: string;
+  title: string;
+  url: string;
 }
 
 function bookmarksApi(): BookmarksApi {
@@ -71,4 +78,39 @@ function collectLinks(nodes: BookmarkNode[], path: string, out: BookmarkLink[]):
       collectLinks(node.children, childPath, out);
     }
   }
+}
+
+/**
+ * The first `limit` direct links of the visible top-level folders, in browser
+ * order. These are the tiles on the new-tab page, so only direct children count.
+ */
+export async function getShortcuts(excludedIds: string[], limit: number): Promise<Shortcut[]> {
+  const [root] = await bookmarksApi().getTree();
+  const excluded = new Set(excludedIds);
+  const out: Shortcut[] = [];
+  for (const top of root?.children ?? []) {
+    if (top.url || excluded.has(top.id)) continue;
+    for (const node of top.children ?? []) {
+      if (node.url && /^https?:/i.test(node.url)) {
+        out.push({ id: node.id, title: node.title || node.url, url: node.url });
+      }
+    }
+  }
+  return out.slice(0, limit);
+}
+
+/** Saves a new shortcut as a link in the Bookmarks bar. Throws on a non-http URL. */
+export async function addShortcut(title: string, url: string): Promise<void> {
+  const parsed = new URL(url); // throws on malformed input
+  if (!/^https?:$/.test(parsed.protocol)) throw new Error("The address must start with http or https.");
+  const [root] = await bookmarksApi().getTree();
+  const bar = (root?.children ?? []).find((n) => !n.url && n.title === "Bookmarks bar") ?? root?.children?.[0];
+  if (!bar) throw new Error("No Bookmarks bar was found.");
+  await bookmarksApi().create({ parentId: bar.id, title: title.trim() || parsed.hostname, url: parsed.href });
+}
+
+/** Chrome's own icon cache for a page. Needs the "favicon" permission; no request leaves the browser. */
+export function faviconUrl(pageUrl: string): string {
+  const runtime = (globalThis as unknown as { browser: { runtime: { getURL(p: string): string } } }).browser.runtime;
+  return runtime.getURL(`/_favicon/?pageUrl=${encodeURIComponent(pageUrl)}&size=64`);
 }

@@ -13,7 +13,8 @@ export default defineConfig({
       "storage", //       API key, settings, the built homepage
       "alarms", //        heartbeat: scheduled rebuilds + reattach after a worker kill
       "notifications", // surface a failed headless rebuild when no tab is open
-      "bookmarks", //     bookmarks panel: list the user's bookmarks on the new tab (never sent to the model)
+      "bookmarks", //     bookmarks panel and shortcut tiles on the new tab (never sent to the model)
+      "favicon", //       site icons on the shortcut tiles, read from Chrome's own cache
     ],
     // Needed to scrape arbitrary pages; also exempts api.anthropic.com from CORS.
     host_permissions: ["<all_urls>"],

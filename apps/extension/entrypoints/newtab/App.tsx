@@ -7,6 +7,7 @@ import { toRenderable } from "@/lib/transpile";
 import { ApiKeySetup } from "./components/ApiKeySetup";
 import { BookmarksPanel } from "./components/BookmarksPanel";
 import { BuildProgress } from "./components/BuildProgress";
+import { ShortcutTiles } from "./components/ShortcutTiles";
 import { HomepagePreview } from "./components/HomepagePreview";
 import { SettingsModal } from "./components/SettingsModal";
 import { btn, errorBox } from "./components/ui";
@@ -143,6 +144,7 @@ export default function App() {
             </button>
           )}
         </div>
+        {bookmarksEnabled && <ShortcutTiles excludedFolderIds={excludedFolderIds} />}
         {showBookmarks && (
           <BookmarksPanel excludedFolderIds={excludedFolderIds} onClose={() => setShowBookmarks(false)} />
         )}
