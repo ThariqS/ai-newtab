@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { DEFAULT_MODEL, type HomepageModel } from "@homepage/agent-core";
+import { DEFAULT_MODEL, DEFAULT_BLOCKED_SITES, type HomepageModel } from "@homepage/agent-core";
 import { DEFAULT_REBUILD_INTERVAL_HOURS } from "@/lib/auto-rebuild";
 import { BUILD_STEPS } from "@/lib/protocol";
 import { KEYS, extensionStore, loadHomepage, loadSettings, saveSetting } from "@/lib/storage";
@@ -17,6 +17,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [apiKey, setApiKey] = useState<string | null>(null);
   const [systemPrompt, setSystemPrompt] = useState("");
+  const [blockedSites, setBlockedSites] = useState<string[]>(DEFAULT_BLOCKED_SITES);
   const [model, setModel] = useState<HomepageModel>(DEFAULT_MODEL);
   const [autoRebuild, setAutoRebuild] = useState(true);
   const [intervalHours, setIntervalHours] = useState(DEFAULT_REBUILD_INTERVAL_HOURS);
@@ -52,6 +53,7 @@ export default function App() {
         ]);
         setApiKey(settings.apiKey);
         setSystemPrompt(settings.systemPrompt);
+        setBlockedSites(settings.blockedSites);
         setModel(settings.model);
         setAutoRebuild(settings.autoRebuild);
         setIntervalHours(settings.rebuildIntervalHours ?? DEFAULT_REBUILD_INTERVAL_HOURS);
@@ -71,8 +73,9 @@ export default function App() {
   }, []);
 
   const savePrompt = useCallback(
-    async (prompt: string) => {
-      await saveSetting("systemPrompt", prompt);
+    async (prompt: string, sites: string[]) => {
+      await Promise.all([saveSetting("systemPrompt", prompt), saveSetting("blockedSites", sites)]);
+      setBlockedSites(sites);
       setSystemPrompt(prompt);
       setShowSettings(false);
       setRenderedCode(null);
@@ -240,6 +243,7 @@ export default function App() {
       {showSettings && (
         <SettingsModal
           initialPrompt={systemPrompt}
+          blockedSites={blockedSites}
           model={model}
           onChangeModel={changeModel}
           autoRebuild={autoRebuild}

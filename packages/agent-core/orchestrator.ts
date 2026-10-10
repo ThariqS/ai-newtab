@@ -1,6 +1,7 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { buildHistoryDigest, slugifyUrl } from "./history-digest";
 import { OUTPUT_PATH, buildKickoffMessage } from "./prompt";
+import { DEFAULT_BLOCKED_SITES, isAllowedUrl, isBlocked, normalizeBlockList } from "./site-filter";
 import { DEFAULTS } from "./schemas";
 import { STORAGE_KEYS, ensureAgent, ensureEnvironment, type HomepageModel } from "./setup";
 import type {
@@ -34,6 +35,11 @@ export interface RunOptions {
   bridge: BrowserBridge;
   store: KVStore;
   userSystemPrompt?: string;
+  /**
+   * Hosts the tools must never read. A getter is re-read before every tool call,
+   * so a list saved mid-build applies to the rest of that build.
+   */
+  blockedSites?: string[] | (() => Promise<string[]>);
   /** Ignored when resuming: the session keeps the agent (and model) it started with. */
   model?: HomepageModel;
   callbacks?: RunCallbacks;
@@ -88,13 +94,16 @@ export async function runHomepageBuild(opts: RunOptions): Promise<HomepageBuildR
    */
   const dispatch = async (event: CustomToolUse): Promise<void> => {
     try {
+      const blockedSites = normalizeBlockList(
+        (typeof opts.blockedSites === "function" ? await opts.blockedSites() : opts.blockedSites) ?? DEFAULT_BLOCKED_SITES,
+      );
       let result: GetHistoryResult | GetPageHtmlResult;
       switch (event.name) {
         case "getHistory":
-          result = await runGetHistory(event, bridge, emit);
+          result = await runGetHistory(event, bridge, emit, blockedSites);
           break;
         case "getPageHtml":
-          result = await runGetPageHtml(event, { client, bridge, sessionId: sessionId!, rememberUpload, emit });
+          result = await runGetPageHtml(event, { client, bridge, sessionId: sessionId!, rememberUpload, emit, blockedSites });
           break;
         default:
           throw new Error(`Unknown custom tool: ${event.name}`);
@@ -239,7 +248,11 @@ export async function runHomepageBuild(opts: RunOptions): Promise<HomepageBuildR
     emit.phase("cleanup");
     await Promise.allSettled(uploadedFileIds.map((id) => client.beta.files.delete(id)));
     await store.remove(STORAGE_KEYS.uploadedFileIds);
-    await deleteSessionWhenSettled(client, sessionId!).catch(() => {});
+    if (sessionId) {
+      await deleteSessionWhenSettled(client, sessionId).catch((err) =>
+        emit.log(`session ${sessionId} was not deleted: ${String(err)}`),
+      );
+    }
     await store.remove(STORAGE_KEYS.activeSessionId);
   }
 }
@@ -252,6 +265,7 @@ async function runGetHistory(
   event: CustomToolUse,
   bridge: BrowserBridge,
   emit: Emit,
+  blockedSites: string[],
 ): Promise<GetHistoryResult> {
   const input = event.input as { daysToAnalyze?: number; maxResults?: number };
   const daysToAnalyze = input.daysToAnalyze ?? DEFAULTS.daysToAnalyze;
@@ -259,7 +273,13 @@ async function runGetHistory(
 
   emit.phase("history", `${daysToAnalyze}d`);
   const { sites, totalSitesSeen } = await bridge.getHistory({ daysToAnalyze, maxResults });
-  const digest = buildHistoryDigest(sites, { daysToAnalyze, maxResults, totalSitesSeen });
+  const allowed = sites.filter((site) => !isBlocked(site.domain, blockedSites));
+  // Blocked domains are dropped from the count too: the model is never told they exist.
+  const digest = buildHistoryDigest(allowed, {
+    daysToAnalyze,
+    maxResults,
+    totalSitesSeen: totalSitesSeen - (sites.length - allowed.length),
+  });
   emit.log(`history: ${digest.sites.length} of ${digest.totalSitesSeen} domains`);
   return digest;
 }
@@ -272,18 +292,38 @@ async function runGetPageHtml(
     sessionId: string;
     rememberUpload: (id: string) => Promise<void>;
     emit: Emit;
+    blockedSites: string[];
   },
 ): Promise<GetPageHtmlResult> {
   const input = event.input as { urls: string[]; loadDelayMs?: number };
   ctx.emit.phase("scraping", `${input.urls.length} pages`);
 
-  const { pages, failed } = await ctx.bridge.getPageHtml({
-    urls: input.urls,
-    loadDelayMs: input.loadDelayMs ?? DEFAULTS.loadDelayMs,
+  const allowed: string[] = [];
+  const blocked: GetPageHtmlResult["failed"] = [];
+  for (const url of input.urls) {
+    // Match on the URL the browser will load; malformed URLs never reach the signed-in browser.
+    if (isAllowedUrl(url, ctx.blockedSites)) allowed.push(url);
+    else blocked.push({ url, reason: "blocked by the user's settings" });
+  }
+
+  // Skip the bridge entirely when nothing is left, so no scraper window opens.
+  const { pages: loaded, failed } = allowed.length
+    ? await ctx.bridge.getPageHtml({
+        urls: allowed,
+        loadDelayMs: input.loadDelayMs ?? DEFAULTS.loadDelayMs,
+      })
+    : { pages: [], failed: [] };
+
+  // A redirect can land on a blocked host; drop what it read before anything is uploaded.
+  const pages = loaded.filter((page) => {
+    if (!page.finalUrl || isAllowedUrl(page.finalUrl, ctx.blockedSites)) return true;
+    blocked.push({ url: page.url, reason: "blocked by the user's settings" });
+    return false;
   });
+  if (blocked.length) ctx.emit.log(`blocked: ${blocked.length} url(s)`);
 
   const refs: PageRef[] = [];
-  const mountFailures = [...failed];
+  const mountFailures = [...blocked, ...failed];
 
   for (const page of pages) {
     try {
@@ -315,7 +355,7 @@ async function runGetPageHtml(
     }
   }
 
-  if (refs.length === 0 && mountFailures.length > 0) {
+  if (refs.length === 0 && mountFailures.length > 0 && blocked.length === 0) {
     throw new Error(
       `No pages could be mounted. Failures: ${mountFailures
         .map((f) => `${f.url} (${f.reason})`)
@@ -380,14 +420,25 @@ async function collectDeliverable(
 }
 
 /**
- * The stream reports idle slightly before the session's queryable status catches
- * up; deleting immediately intermittently 400s with "cannot delete while running".
+ * A running session can't be deleted ("cannot delete while running"). After a
+ * normal finish that's only the brief lag between the stream's idle and the
+ * queryable status. After a cancel or error the agent is still mid-turn, so it
+ * gets interrupted and has to reach a safe boundary before it goes idle.
  */
+const SETTLE_POLLS_BEFORE_INTERRUPT = 10;
+const INTERRUPT_DEADLINE_MS = 60_000;
+
 async function deleteSessionWhenSettled(client: Anthropic, sessionId: string): Promise<void> {
-  for (let attempt = 0; attempt < 10; attempt++) {
+  const deadline = Date.now() + INTERRUPT_DEADLINE_MS;
+  let interrupted = false;
+  for (let attempt = 0; Date.now() < deadline; attempt++) {
     const session = await client.beta.sessions.retrieve(sessionId);
     if (session.status !== "running") break;
-    await new Promise((r) => setTimeout(r, 200));
+    if (!interrupted && attempt >= SETTLE_POLLS_BEFORE_INTERRUPT) {
+      await client.beta.sessions.events.send(sessionId, { events: [{ type: "user.interrupt" }] });
+      interrupted = true;
+    }
+    await new Promise((r) => setTimeout(r, interrupted ? 1000 : 200));
   }
   await client.beta.sessions.delete(sessionId);
 }
