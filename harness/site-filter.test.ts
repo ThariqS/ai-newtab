@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type Anthropic from "@anthropic-ai/sdk";
-import { isBlocked, normalizeBlockList, runHomepageBuild, type BrowserBridge, type KVStore } from "@homepage/agent-core";
+import { isBlocked, isPrivateAddress, normalizeBlockList, runHomepageBuild, type BrowserBridge, type KVStore } from "@homepage/agent-core";
 import { fixtureHistory } from "./node-bridge";
 
 test("normalizes pasted hosts and URLs", () => {
@@ -33,7 +33,12 @@ async function runTools(urls: string[], blockedSites?: string[] | (() => Promise
   ];
   async function* stream() { if (!resume) yield* events; }
   const client = { beta: {
-    agents: { retrieve: async () => ({}) },
+    agents: {
+      // No cached agent is retrieved, so ensureAgent takes the create path. The update path is not under test here.
+      retrieve: async () => { throw new Error("not found"); },
+      create: async () => ({ id: "agent", version: 1 }),
+      update: async () => ({ id: "agent", version: 2 }),
+    },
     environments: { retrieve: async () => ({}) },
     sessions: {
       create: async () => ({ id: "session" }),
@@ -146,4 +151,30 @@ test("drops pages that redirected to a blocked host before uploading them", asyn
   expect(out.pages.map((p: any) => p.url)).toEqual(["https://public.test/"]);
   expect(out.failed).toEqual([{ url: redirector, reason: "blocked by the user's settings" }]);
   expect(JSON.stringify(out)).not.toContain("Inbox");
+});
+
+test("classifies the addresses webRequest reports", () => {
+  for (const ip of ["127.0.0.1", "192.168.179.1", "10.0.0.5", "::1", "::ffff:127.0.0.1", "fe80::1", "fd12::1"]) {
+    expect(isPrivateAddress(ip)).toBe(true);
+  }
+  for (const ip of ["160.79.104.10", "8.8.8.8", "2606:4700::1111", "not an address"]) {
+    expect(isPrivateAddress(ip)).toBe(false);
+  }
+});
+
+test("drops pages served from a private address under a public-looking name", async () => {
+  const urls = ["http://fritz.box/", "https://public.test/", "https://unknown.test/"];
+  const { results, uploads } = await runTools(urls, [], false, undefined, async ({ urls }) => ({
+    pages: [
+      { url: urls[0]!, finalUrl: urls[0], ip: "192.168.179.1", title: "FRITZ!Box", html: "<p>router</p>" },
+      { url: urls[1]!, finalUrl: urls[1], ip: "160.79.104.10", title: "Public", html: "<p>news</p>" },
+      { url: urls[2]!, finalUrl: urls[2], title: "No address", html: "<p>kept</p>" },
+    ],
+    failed: [],
+  }));
+  const out = JSON.parse(results[1].content[0].text);
+  expect(uploads).toHaveLength(2);
+  expect(out.pages.map((p: any) => p.url)).toEqual(["https://public.test/", "https://unknown.test/"]);
+  expect(out.failed).toEqual([{ url: "http://fritz.box/", reason: "blocked by the user's settings" }]);
+  expect(JSON.stringify(out)).not.toContain("FRITZ");
 });

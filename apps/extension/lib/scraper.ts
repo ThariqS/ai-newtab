@@ -1,4 +1,4 @@
-import type { BrowserBridge, ScrapedPage } from "@homepage/agent-core";
+import { isPrivateAddress, type BrowserBridge, type ScrapedPage } from "@homepage/agent-core";
 import sanitizeHtml from "sanitize-html";
 
 type ScrapeReport = Awaited<ReturnType<BrowserBridge["getPageHtml"]>>;
@@ -25,6 +25,19 @@ const DEFAULT_OPTIONS: Required<ScrapeOptions> = {
   timeout: 30000, // 30 seconds timeout
   concurrentTabs: 3, // Process up to 3 tabs at once
 };
+
+/**
+ * The address the extension's own API requests connect to. A private one means a
+ * proxy (or similar) sits in the path, so the address a scraped page arrives from
+ * says nothing about the page's host and is not reported.
+ */
+let apiAddress: string | undefined;
+browser.webRequest.onResponseStarted.addListener(
+  (details) => {
+    apiAddress = details.ip;
+  },
+  { urls: ["https://api.anthropic.com/*"], tabId: -1 },
+);
 
 /** Keep content and links; drop scripts, styles, attributes and empty wrappers. */
 function cleanHtmlForLLM(html: string) {
@@ -95,7 +108,8 @@ async function createScraperWindow(): Promise<number> {
 async function scrapeUrl(
   url: string,
   windowId: number,
-  opts: Required<ScrapeOptions>
+  opts: Required<ScrapeOptions>,
+  addressOf: (tabId: number) => string | undefined
 ): Promise<ScrapedPage | null> {
   try {
     // Create a new tab in the scraper window
@@ -156,6 +170,9 @@ async function scrapeUrl(
       retryCount++;
     }
 
+    // The address of the document just extracted.
+    const ip = addressOf(tab.id!);
+
     // Close the tab
     await browser.tabs.remove(tab.id!);
 
@@ -163,6 +180,7 @@ async function scrapeUrl(
       return {
         url,
         finalUrl: result.url,
+        ip,
         title: result.title,
         html: cleanHtmlForLLM(result.html),
       };
@@ -194,13 +212,29 @@ export async function scrapeUrls(
   // Create a separate window for scraping
   const windowId = await createScraperWindow();
 
+  // Before any tab loads: the address each tab's document was served from, last response wins.
+  // Keyed by tab and read only for the scraper's own tabs: a windowId filter matches nothing
+  // here, since these events report no windowId.
+  const addresses = new Map<number, string | undefined>();
+  const recordAddress = (details: { tabId: number; ip?: string }) => {
+    addresses.set(details.tabId, details.ip);
+  };
+  const direct = apiAddress !== undefined && !isPrivateAddress(apiAddress);
+  if (direct) {
+    browser.webRequest.onResponseStarted.addListener(recordAddress, {
+      urls: ["http://*/*", "https://*/*"],
+      types: ["main_frame"],
+    });
+  }
+  const addressOf = (tabId: number) => addresses.get(tabId);
+
   try {
     // Process URLs in batches
     for (let i = 0; i < urls.length; i += opts.concurrentTabs) {
       const batch = urls.slice(i, i + opts.concurrentTabs);
 
       const batchResults = await Promise.all(
-        batch.map(async (url) => ({ url, page: await scrapeUrl(url, windowId, opts) }))
+        batch.map(async (url) => ({ url, page: await scrapeUrl(url, windowId, opts, addressOf) }))
       );
 
       for (const { url, page } of batchResults) {
@@ -209,6 +243,7 @@ export async function scrapeUrls(
       }
     }
   } finally {
+    browser.webRequest.onResponseStarted.removeListener(recordAddress);
     // Close the scraper window
     try {
       await browser.windows.remove(windowId);

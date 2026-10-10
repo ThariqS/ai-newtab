@@ -63,6 +63,8 @@ export interface ScrapedPage {
   url: string;
   /** Where the page ended up after redirects, when the host can tell. */
   finalUrl?: string;
+  /** The address the browser connected to for the page, when the host can tell it is not a proxy's. */
+  ip?: string;
   title: string;
   html: string;
 }

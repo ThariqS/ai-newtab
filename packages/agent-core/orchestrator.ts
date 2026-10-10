@@ -1,7 +1,7 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { buildHistoryDigest, slugifyUrl } from "./history-digest";
 import { OUTPUT_PATH, buildKickoffMessage } from "./prompt";
-import { DEFAULT_BLOCKED_SITES, isAllowedUrl, isBlocked, normalizeBlockList } from "./site-filter";
+import { DEFAULT_BLOCKED_SITES, isAllowedUrl, isBlocked, isPrivateAddress, normalizeBlockList } from "./site-filter";
 import { DEFAULTS } from "./schemas";
 import { STORAGE_KEYS, ensureAgent, ensureEnvironment, type HomepageModel } from "./setup";
 import type {
@@ -314,9 +314,11 @@ async function runGetPageHtml(
       })
     : { pages: [], failed: [] };
 
-  // A redirect can land on a blocked host; drop what it read before anything is uploaded.
+  // A redirect can land on a blocked host, and a public-looking name (fritz.box, an
+  // intranet name) can resolve to a private address; drop what it read before anything is uploaded.
   const pages = loaded.filter((page) => {
-    if (!page.finalUrl || isAllowedUrl(page.finalUrl, ctx.blockedSites)) return true;
+    const urlAllowed = !page.finalUrl || isAllowedUrl(page.finalUrl, ctx.blockedSites);
+    if (urlAllowed && !(page.ip && isPrivateAddress(page.ip))) return true;
     blocked.push({ url: page.url, reason: "blocked by the user's settings" });
     return false;
   });

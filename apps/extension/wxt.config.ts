@@ -10,6 +10,7 @@ export default defineConfig({
       "history", //       getHistory tool
       "tabs", //          getPageHtml: open pages and watch them load
       "scripting", //     getPageHtml: inject the scraper into loaded pages
+      "webRequest", //    getPageHtml: the address each scraped page was served from (observe only)
       "storage", //       API key, settings, the built homepage
       "alarms", //        heartbeat: scheduled rebuilds + reattach after a worker kill
       "notifications", // surface a failed headless rebuild when no tab is open
