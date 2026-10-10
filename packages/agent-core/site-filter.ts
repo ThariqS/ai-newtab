@@ -64,6 +64,16 @@ export function isPrivateHost(host: string): boolean {
   return !host.includes(".") || /\.(local|localhost|internal|lan|home\.arpa)$/.test(host);
 }
 
+/** An address the browser connected to, as webRequest reports it (`::1`, not `[::1]`). */
+export function isPrivateAddress(ip: string): boolean {
+  try {
+    // URL canonicalizes both families, e.g. ::ffff:127.0.0.1 to [::ffff:7f00:1], which isPrivateHost expects.
+    return isPrivateHost(new URL(`http://${ip.includes(":") ? `[${ip}]` : ip}/`).hostname);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Match at domain boundaries, including subdomains for both list syntaxes.
  * Private and local-network hosts are always blocked, whatever the list says.

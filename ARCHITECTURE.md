@@ -144,7 +144,13 @@ counts, and blocked or non-HTTP(S) page requests never reach the browser bridge.
 Each scraped page's final URL is checked again before upload, so a redirect onto
 a blocked host is dropped: the browser still loads it, but nothing it read is
 sent. Loopback, private-IP and local-network hosts are always blocked, whatever
-the list says. Subresource loads are not intercepted.
+the list says. A name can still resolve to a private address (`fritz.box`, an
+intranet name), so the scraper also records the address each page was served
+from (`webRequest`, observe only) and the page is dropped before upload when it is
+private. That address is only reported when the extension's own API requests
+connect to a public address; behind a proxy at a private address, or when Chrome
+reports no address, the name check is all there is. History digests still list
+such a domain. Subresource loads are not intercepted.
 
 The session event log persists every domain, title and scraped page body server-side
 until deleted, and uploaded files persist independently. `runHomepageBuild` deletes
