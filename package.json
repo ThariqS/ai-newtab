@@ -4,14 +4,17 @@
   "packageManager": "pnpm@10.11.1",
   "scripts": {
     "build": "pnpm --filter @homepage/extension build",
+    "build:firefox": "pnpm --filter @homepage/extension build:firefox",
     "dev": "pnpm --filter @homepage/extension dev",
+    "dev:firefox": "pnpm --filter @homepage/extension dev:firefox",
     "typecheck": "pnpm -r typecheck",
     "test": "bun test harness/",
     "agent:run": "bun harness/run-agent.ts",
     "agent:verify": "bun harness/verify-homepage.ts",
     "agent:resume-test": "bun harness/test-resume.ts crash && bun harness/test-resume.ts resume",
     "agent:retention": "bun harness/check-retention.ts",
-    "extension:test": "bun harness/test-extension.ts"
+    "extension:test": "bun harness/test-extension.ts",
+    "extension:test:firefox": "bun harness/test-extension-firefox.ts"
   },
   "devDependencies": {
     "typescript": "^5.8.3"

@@ -2,7 +2,7 @@
 
 **A new tab that reads the internet for you.**
 
-AI Homepage replaces Chrome's new-tab page with one that's written for you. An
+AI Homepage replaces your browser's new-tab page with one that's written for you. An
 agent looks at what you've actually been browsing, opens the pages you follow
 (signed in as you), and writes a fresh homepage from what it finds there. It
 rebuilds itself in the background, so each new tab is up to date.
@@ -26,7 +26,7 @@ terminal, a zine.
 
 ## Install
 
-You need Chrome (or another Chromium browser), [Node.js](https://nodejs.org) 20+,
+You need Chrome (or another Chromium browser) or Firefox, [Node.js](https://nodejs.org) 20+,
 and an [Anthropic API key](https://console.anthropic.com).
 
 ```bash
@@ -45,6 +45,30 @@ Then load it into Chrome:
 3. Click **Load unpacked** and choose `apps/extension/.output/chrome-mv3`.
 
 If Chrome asks whether to keep the changed new-tab page, choose **Keep it**.
+
+### Firefox
+
+Build the Firefox version instead:
+
+```bash
+npx pnpm@10.11.1 build:firefox
+```
+
+Then load it:
+
+1. Go to `about:debugging#/runtime/this-firefox`.
+2. Click **Load Temporary Add-on…** and choose
+   `apps/extension/.output/firefox-mv2/manifest.json`.
+
+If Firefox says an extension changed your new tab page, keep the change.
+
+Firefox removes temporary add-ons when it quits, so you'll need to load it again
+after a restart. Regular Firefox only keeps signed add-ons installed.
+[Developer Edition](https://www.mozilla.org/firefox/developer/) and Nightly can
+keep this unsigned one: set `xpinstall.signatures.required` to `false` in
+`about:config`, run `npx pnpm@10.11.1 --filter @homepage/extension zip:firefox`, then in
+`about:addons` click ⚙️ → **Install Add-on From File…** and choose the
+`-firefox.zip` file in `apps/extension/.output/`.
 
 ## Your first homepage
 
@@ -107,10 +131,11 @@ failed build until the next interval, so it never loops.
   marketing pages. Anything it can't open is reported, not hidden.
 - **Links are real.** Every link on the page comes from a page the agent actually
   read. It's told never to invent a URL.
-- **Interrupted builds.** If Chrome closes mid-build, the new tab offers
+- **Interrupted builds.** If the browser closes mid-build, the new tab offers
   **Resume interrupted build** next time.
 - **Updating.** After pulling new code, run `npx pnpm@10.11.1 build` again, then
-  click the reload icon on the extension in `chrome://extensions`.
+  click the reload icon on the extension in `chrome://extensions`. In Firefox, run
+  `build:firefox` and click **Reload** on the add-on in `about:debugging`.
 
 ## How it works
 
@@ -134,19 +159,21 @@ the gotchas worth knowing.
 
 ```
 packages/agent-core   the agent loop: host-agnostic, no chrome.* or node:*
-apps/extension        the MV3 extension (WXT + React)
-harness               Bun scripts that run agent-core outside Chrome, and test the built extension
+apps/extension        the extension (WXT + React): MV3 for Chrome, MV2 for Firefox
+harness               Bun scripts that run agent-core outside the browser, and test the built extension
 ```
 
 ```bash
-pnpm dev                 # WXT with hot reload
-pnpm typecheck           # all packages
-pnpm test                # unit tests (no API calls; needs Bun)
-pnpm extension:test      # loads the built extension into headless Chrome (no API calls)
+pnpm dev                     # WXT with hot reload
+pnpm dev:firefox             # the same, in Firefox
+pnpm typecheck               # all packages
+pnpm test                    # unit tests (no API calls; needs Bun)
+pnpm extension:test          # loads the built extension into headless Chrome (no API calls)
+pnpm extension:test:firefox  # the same in headless Firefox, after pnpm build:firefox
 
-cp .env.example .env     # add ANTHROPIC_API_KEY, then:
-pnpm agent:run           # a full build against the real API, with fixture history
-pnpm agent:verify        # check the output actually renders
+cp .env.example .env         # add ANTHROPIC_API_KEY, then:
+pnpm agent:run               # a full build against the real API, with fixture history
+pnpm agent:verify            # check the output actually renders
 ```
 
 ## Status
