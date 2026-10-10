@@ -173,6 +173,7 @@ export class BuildManager {
         bridge: browserBridge,
         store: extensionStore,
         userSystemPrompt: systemPrompt,
+        blockedSites: async () => (await loadSettings()).blockedSites,
         model,
         resumeSessionId,
         signal: this.controller.signal,

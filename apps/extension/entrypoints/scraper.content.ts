@@ -36,6 +36,7 @@ export default defineContentScript({
 
       // Return raw HTML and title after scrolling
       return {
+        url: location.href,
         title: document.title,
         html: document.body.innerHTML,
       };
