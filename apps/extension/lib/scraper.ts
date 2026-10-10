@@ -5,6 +5,7 @@ type ScrapeReport = Awaited<ReturnType<BrowserBridge["getPageHtml"]>>;
 
 /** What entrypoints/scraper.content.ts returns from inside the page. */
 interface ScraperResult {
+  url: string;
   title: string;
   html: string;
 }
@@ -161,6 +162,7 @@ async function scrapeUrl(
     if (result) {
       return {
         url,
+        finalUrl: result.url,
         title: result.title,
         html: cleanHtmlForLLM(result.html),
       };

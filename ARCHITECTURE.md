@@ -141,7 +141,10 @@ arrived in the history fetch.
 The editable blocked-sites list is enforced in agent-core's tool handlers, not
 just the prompt: blocked domains are excluded from history digests and their
 counts, and blocked or non-HTTP(S) page requests never reach the browser bridge.
-This checks requested URLs; it does not intercept redirects or subresource loads.
+Each scraped page's final URL is checked again before upload, so a redirect onto
+a blocked host is dropped: the browser still loads it, but nothing it read is
+sent. Loopback, private-IP and local-network hosts are always blocked, whatever
+the list says. Subresource loads are not intercepted.
 
 The session event log persists every domain, title and scraped page body server-side
 until deleted, and uploaded files persist independently. `runHomepageBuild` deletes

@@ -78,7 +78,9 @@ Click **Save & rebuild** to apply them right away.
 **Sites the agent never reads.** Enter one host per line; subdomains are included,
 and `*.example.com` is supported. The editable defaults include common webmail,
 sign-in and document hosts. **Save & rebuild** saves the list and applies it to
-history summaries and URLs requested through `getPageHtml`.
+history summaries and URLs requested through `getPageHtml`. A page that redirects
+onto a blocked host is dropped before its content is uploaded. Local-network
+addresses (localhost, private IPs, `.local` and `.internal` hosts) are always blocked.
 
 **Model.** Choose which Claude model writes your page:
 

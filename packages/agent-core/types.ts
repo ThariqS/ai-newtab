@@ -61,6 +61,8 @@ export interface RawSiteMetadata {
 
 export interface ScrapedPage {
   url: string;
+  /** Where the page ended up after redirects, when the host can tell. */
+  finalUrl?: string;
   title: string;
   html: string;
 }

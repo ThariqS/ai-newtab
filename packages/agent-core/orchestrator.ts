@@ -1,7 +1,7 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { buildHistoryDigest, slugifyUrl } from "./history-digest";
 import { OUTPUT_PATH, buildKickoffMessage } from "./prompt";
-import { DEFAULT_BLOCKED_SITES, isBlocked, normalizeBlockList } from "./site-filter";
+import { DEFAULT_BLOCKED_SITES, isAllowedUrl, isBlocked, normalizeBlockList } from "./site-filter";
 import { DEFAULTS } from "./schemas";
 import { STORAGE_KEYS, ensureAgent, ensureEnvironment, type HomepageModel } from "./setup";
 import type {
@@ -297,27 +297,26 @@ async function runGetPageHtml(
   const allowed: string[] = [];
   const blocked: GetPageHtmlResult["failed"] = [];
   for (const url of input.urls) {
-    let permitted = false;
-    try {
-      // Match on the URL the browser will load, not on the raw string.
-      const parsed = new URL(url);
-      permitted =
-        (parsed.protocol === "http:" || parsed.protocol === "https:") && !isBlocked(parsed.href, ctx.blockedSites);
-    } catch {
-      // Malformed URLs must never reach the signed-in browser.
-    }
-    if (permitted) allowed.push(url);
+    // Match on the URL the browser will load; malformed URLs never reach the signed-in browser.
+    if (isAllowedUrl(url, ctx.blockedSites)) allowed.push(url);
     else blocked.push({ url, reason: "blocked by the user's settings" });
   }
-  if (blocked.length) ctx.emit.log(`blocked: ${blocked.length} url(s)`);
 
   // Skip the bridge entirely when nothing is left, so no scraper window opens.
-  const { pages, failed } = allowed.length
+  const { pages: loaded, failed } = allowed.length
     ? await ctx.bridge.getPageHtml({
         urls: allowed,
         loadDelayMs: input.loadDelayMs ?? DEFAULTS.loadDelayMs,
       })
     : { pages: [], failed: [] };
+
+  // A redirect can land on a blocked host; drop what it read before anything is uploaded.
+  const pages = loaded.filter((page) => {
+    if (!page.finalUrl || isAllowedUrl(page.finalUrl, ctx.blockedSites)) return true;
+    blocked.push({ url: page.url, reason: "blocked by the user's settings" });
+    return false;
+  });
+  if (blocked.length) ctx.emit.log(`blocked: ${blocked.length} url(s)`);
 
   const refs: PageRef[] = [];
   const mountFailures = [...blocked, ...failed];
