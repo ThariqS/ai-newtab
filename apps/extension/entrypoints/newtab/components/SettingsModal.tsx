@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { MODEL_CHOICES, normalizeBlockList, type HomepageModel } from "@homepage/agent-core";
 import { REBUILD_INTERVAL_CHOICES } from "@/lib/auto-rebuild";
+import { getTopLevelFolderNames } from "@/lib/bookmarks";
 import { btn } from "./ui";
 
 export function SettingsModal({
@@ -12,6 +13,10 @@ export function SettingsModal({
   onToggleAutoRebuild,
   intervalHours,
   onChangeInterval,
+  bookmarksEnabled,
+  onToggleBookmarks,
+  excludedFolderIds,
+  onChangeExcludedFolders,
   onClose,
   onSave,
 }: {
@@ -23,11 +28,27 @@ export function SettingsModal({
   onToggleAutoRebuild: (next: boolean) => void;
   intervalHours: number;
   onChangeInterval: (next: number) => void;
+  bookmarksEnabled: boolean;
+  onToggleBookmarks: (next: boolean) => void;
+  excludedFolderIds: string[];
+  onChangeExcludedFolders: (next: string[]) => void;
   onClose: () => void;
   onSave: (prompt: string, blockedSites: string[]) => void;
 }) {
   const [draft, setDraft] = useState(initialPrompt);
   const [blockedDraft, setBlockedDraft] = useState(blockedSites.join("\n"));
+  const [folders, setFolders] = useState<{ id: string; title: string }[]>([]);
+
+  useEffect(() => {
+    getTopLevelFolderNames().then(setFolders).catch(() => setFolders([]));
+  }, []);
+
+  function toggleFolder(id: string, shown: boolean) {
+    const next = shown
+      ? excludedFolderIds.filter((x) => x !== id)
+      : [...excludedFolderIds, id];
+    onChangeExcludedFolders(next);
+  }
 
   return (
     <div
@@ -133,6 +154,34 @@ export function SettingsModal({
         <p style={{ color: "#888", fontSize: 12, margin: "6px 0 0" }}>
           When on, the extension rebuilds in the background once your homepage is this old, so
           your next tab shows a fresh one (uses your API key).
+        </p>
+
+        <h3 style={{ color: "#333", fontSize: 15, margin: "22px 0 4px" }}>Bookmarks</h3>
+        <label style={{ display: "flex", alignItems: "center", gap: 8, color: "#333", fontSize: 14, cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            checked={bookmarksEnabled}
+            onChange={(e) => onToggleBookmarks(e.target.checked)}
+          />
+          Show the bookmarks button
+        </label>
+        <div style={{ marginTop: 8, marginLeft: 24, color: bookmarksEnabled ? "#333" : "#aaa", fontSize: 14 }}>
+          {folders.length === 0 && <div style={{ color: "#888" }}>No bookmark folders found.</div>}
+          {folders.map((f) => (
+            <label key={f.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "2px 0", cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                disabled={!bookmarksEnabled}
+                checked={!excludedFolderIds.includes(f.id)}
+                onChange={(e) => toggleFolder(f.id, e.target.checked)}
+              />
+              {f.title}
+            </label>
+          ))}
+        </div>
+        <p style={{ color: "#888", fontSize: 12, margin: "6px 0 0" }}>
+          Bookmarks are read in your browser and shown only on this page. They are never sent to
+          the agent.
         </p>
         <div style={{ display: "flex", gap: 12, marginTop: 20, justifyContent: "flex-end" }}>
           <button

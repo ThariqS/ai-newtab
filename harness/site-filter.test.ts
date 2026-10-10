@@ -33,7 +33,12 @@ async function runTools(urls: string[], blockedSites?: string[] | (() => Promise
   ];
   async function* stream() { if (!resume) yield* events; }
   const client = { beta: {
-    agents: { retrieve: async () => ({}) },
+    agents: {
+      // No cached agent is retrieved, so ensureAgent takes the create path. The update path is not under test here.
+      retrieve: async () => { throw new Error("not found"); },
+      create: async () => ({ id: "agent", version: 1 }),
+      update: async () => ({ id: "agent", version: 2 }),
+    },
     environments: { retrieve: async () => ({}) },
     sessions: {
       create: async () => ({ id: "session" }),
