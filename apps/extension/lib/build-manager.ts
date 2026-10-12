@@ -1,16 +1,41 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { runHomepageBuild, type RunPhase } from "@homepage/agent-core";
+import {
+  CLAUDE_STORAGE_KEYS,
+  DEFAULT_OPENAI_MODEL,
+  OPENAI_STORAGE_KEYS,
+  OpenAIError,
+  SiwcError,
+  describeOpenAIError,
+  listModels,
+  runHomepageBuild,
+  type EngineId,
+  type RunOptions,
+  type RunPhase,
+} from "@homepage/agent-core";
 import { rebuildIntervalMs, shouldAutoRebuild } from "./auto-rebuild";
 import { browserBridge } from "./browser-bridge";
+import { openaiAuthState, openaiReady, openaiTokenProvider } from "./openai-auth";
 import {
   INITIAL_BUILD_STATE,
   LOG_RETENTION,
   stepForPhase,
+  type AuthState,
   type BuildMsg,
   type BuildState,
   type PageMsg,
 } from "./protocol";
-import { KEYS, extensionStore, loadHomepage, loadSettings, saveHomepage } from "./storage";
+import { beginSignIn, cancelSignIn, forgetAccount, signOut } from "./siwc-auth";
+import {
+  KEYS,
+  extensionStore,
+  loadHomepage,
+  loadModelCatalog,
+  loadSettings,
+  resolveOpenAIModel,
+  saveHomepage,
+  saveModelCatalog,
+  type Settings,
+} from "./storage";
 
 type Port = Parameters<Parameters<typeof browser.runtime.onConnect.addListener>[0]>[0];
 
@@ -26,11 +51,15 @@ const SNAPSHOT_THROTTLE_MS = 2_000;
 /** A late-joining tab doesn't need the whole narration, just enough to look alive. */
 const NARRATION_STORAGE_CAP = 2_000;
 
+/** Re-fetch the OpenAI model list when the cache is older than this. */
+const MODEL_CATALOG_TTL_MS = 6 * 60 * 60 * 1000;
+
 /**
  * Owns the single build. Runs `runHomepageBuild` in the worker, holds live state,
  * enforces a single-flight lock, broadcasts progress to every connected tab,
  * mirrors a throttled snapshot to storage, and reattaches to an interrupted run
- * on wake.
+ * on wake. Also fronts every credential (API keys, the ChatGPT sign-in) so
+ * tokens never leave the worker.
  *
  * There is one instance per service worker — i.e. one per browser profile — so
  * single-flight is per-profile, which is the right grain.
@@ -48,20 +77,49 @@ export class BuildManager {
 
   attach(port: Port) {
     this.ports.add(port);
-    port.onMessage.addListener((raw: unknown) => this.onPageMessage(port, raw as PageMsg));
+    port.onMessage.addListener((raw: unknown) => void this.onPageMessage(port, raw as PageMsg));
     port.onDisconnect.addListener(() => this.ports.delete(port));
   }
 
-  private onPageMessage(port: Port, msg: PageMsg) {
+  private async onPageMessage(port: Port, msg: PageMsg) {
     switch (msg.kind) {
       case "subscribe":
         this.send(port, { kind: "snapshot", state: this.state });
+        this.send(port, { kind: "auth", state: await this.authState() });
+        break;
+      case "refreshAuth":
+        this.send(port, { kind: "auth", state: await this.authState() });
         break;
       case "startBuild":
         void this.startBuild({ resume: msg.resume });
         break;
       case "cancel":
         this.cancel();
+        break;
+      case "signIn":
+        try {
+          await beginSignIn({
+            newAccount: msg.newAccount,
+            promptConsent: msg.promptConsent,
+            originTabId: port.sender?.tab?.id ?? null,
+          });
+        } catch (err) {
+          console.error("[BuildManager] signIn failed", err);
+        }
+        await this.broadcastAuth();
+        break;
+      case "cancelSignIn":
+        await cancelSignIn();
+        await this.broadcastAuth();
+        break;
+      case "signOut":
+        if (msg.forget) await forgetAccount();
+        else await signOut();
+        await extensionStore.remove(KEYS.modelCatalog);
+        await this.broadcastAuth();
+        break;
+      case "listModels":
+        this.send(port, await this.modelsMessage(Boolean(msg.refresh)));
         break;
     }
   }
@@ -79,13 +137,48 @@ export class BuildManager {
     for (const port of [...this.ports]) this.send(port, msg);
   }
 
+  // ---- credentials ---------------------------------------------------------
+
+  private async authState(): Promise<AuthState> {
+    const settings = await loadSettings();
+    const openai = await openaiAuthState(settings);
+    const claudeReady = Boolean(settings.apiKey);
+    const ready = settings.engine === "claude" ? claudeReady : await openaiReady(settings);
+    return { engine: settings.engine, ready, claudeReady, openai };
+  }
+
+  /** Push the current credential state to every tab (after a callback completes, a sign-out, …). */
+  async broadcastAuth() {
+    this.broadcast({ kind: "auth", state: await this.authState() });
+  }
+
+  // ---- models (OpenAI engine) ---------------------------------------------
+
+  private async modelsMessage(refresh: boolean): Promise<BuildMsg> {
+    const cached = await loadModelCatalog();
+    const fresh = cached && Date.now() - new Date(cached.fetchedAt).getTime() < MODEL_CATALOG_TTL_MS;
+    if (cached && fresh && !refresh) return { kind: "models", models: cached.models, error: null };
+    try {
+      const settings = await loadSettings();
+      const models = await listModels(await openaiTokenProvider(settings).getAccessToken());
+      await saveModelCatalog(models);
+      return { kind: "models", models, error: null };
+    } catch (err) {
+      return {
+        kind: "models",
+        models: cached?.models ?? [],
+        error: err instanceof OpenAIError ? describeOpenAIError(err) : err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+
   // ---- heartbeat -----------------------------------------------------------
 
   /**
-   * Called on worker wake and on every alarm tick. If a session was left
-   * mid-flight, reattach and continue (lossless — the orchestrator replays the
-   * event log and re-answers orphaned tool calls). Otherwise, consider the daily
-   * rebuild. The single-flight lock is the arbiter that keeps these from racing.
+   * Called on worker wake and on every alarm tick. If a build was left
+   * mid-flight (a Claude session, or an OpenAI checkpoint), reattach and
+   * continue. Otherwise, consider the daily rebuild. The single-flight lock is
+   * the arbiter that keeps these from racing.
    */
   async tick() {
     if (this.running) {
@@ -95,13 +188,19 @@ export class BuildManager {
       return;
     }
 
-    const sessionId = await extensionStore.get<string>(KEYS.activeSessionId);
-    if (sessionId) {
+    if (await this.resumableEngine()) {
       void this.startBuild({ resume: true });
       return;
     }
 
     await this.maybeAutoRebuild();
+  }
+
+  /** Which engine left a build mid-flight, if any. */
+  private async resumableEngine(): Promise<EngineId | null> {
+    if (await extensionStore.get<string>(CLAUDE_STORAGE_KEYS.activeSessionId)) return "claude";
+    if (await extensionStore.get<unknown>(OPENAI_STORAGE_KEYS.activeBuild)) return "openai";
+    return null;
   }
 
   /** Whether opening the day's first tab should already show a fresh homepage. */
@@ -112,11 +211,12 @@ export class BuildManager {
       extensionStore.get<string>(KEYS.lastAutoBuildAttempt),
     ]);
     const now = new Date();
+    const hasCredentials = settings.engine === "claude" ? Boolean(settings.apiKey) : await openaiReady(settings);
 
     if (
       !shouldAutoRebuild({
         enabled: settings.autoRebuild,
-        hasApiKey: Boolean(settings.apiKey),
+        hasCredentials,
         isRunning: this.running,
         lastBuildTimestamp: homepage?.timestamp,
         lastAutoAttemptTimestamp: lastAttempt,
@@ -141,15 +241,44 @@ export class BuildManager {
       return; // single-flight: a second start just attaches.
     }
 
-    const { apiKey, systemPrompt, model } = await loadSettings();
-    if (!apiKey) {
-      // Manual builds are gated behind the key-setup screen and auto-builds
-      // require a key, so this only happens if the key was removed.
-      console.warn("[BuildManager] startBuild aborted — no API key in storage");
-      const message = "No Anthropic API key found. Add your key and try again.";
-      this.state = { ...INITIAL_BUILD_STATE, phase: "error", error: message };
-      this.broadcast({ kind: "error", message });
-      return;
+    const settings = await loadSettings();
+    // A resume belongs to whichever engine left state behind, whatever is selected now.
+    const engine = (opts.resume && (await this.resumableEngine())) || settings.engine;
+    const common = {
+      bridge: browserBridge,
+      store: extensionStore,
+      userSystemPrompt: settings.systemPrompt,
+      blockedSites: async () => (await loadSettings()).blockedSites,
+    };
+
+    let run: RunOptions;
+    if (engine === "claude") {
+      if (!settings.apiKey) {
+        // Manual builds are gated behind the setup screen and auto-builds
+        // require credentials, so this only happens if the key was removed.
+        console.warn("[BuildManager] startBuild aborted — no API key in storage");
+        await this.fail("No Anthropic API key found. Add your key and try again.", { notify: false });
+        return;
+      }
+      // The key is the user's own, read from local storage — there is no server
+      // to hide it behind. See ARCHITECTURE.md → Privacy.
+      const client = new Anthropic({ apiKey: settings.apiKey, dangerouslyAllowBrowser: true });
+      const resumeSessionId = opts.resume
+        ? await extensionStore.get<string>(CLAUDE_STORAGE_KEYS.activeSessionId)
+        : undefined;
+      run = { engine: "claude", client, model: settings.model, resumeSessionId, ...common };
+    } else {
+      if (!(await openaiReady(settings))) {
+        const message =
+          settings.openaiAuthMode === "apiKey"
+            ? "No OpenAI API key found. Add your key and try again."
+            : "Not signed in with ChatGPT, or ChatGPT plan usage was not granted. Sign in and try again.";
+        console.warn("[BuildManager] startBuild aborted — OpenAI engine not ready");
+        await this.fail(message, { notify: false });
+        return;
+      }
+      const model = resolveOpenAIModel(settings.openaiModel, await loadModelCatalog(), DEFAULT_OPENAI_MODEL);
+      run = { engine: "openai", auth: openaiTokenProvider(settings), model, resume: opts.resume, ...common };
     }
 
     this.running = true;
@@ -157,25 +286,11 @@ export class BuildManager {
     this.state = { ...INITIAL_BUILD_STATE, running: true, phase: "setup" };
     this.broadcast({ kind: "snapshot", state: this.state });
     this.startKeepalive();
-    console.log("[BuildManager] build started", { resume: Boolean(opts.resume) });
+    console.log("[BuildManager] build started", { engine, resume: Boolean(opts.resume) });
 
     try {
-      // The key is the user's own, read from local storage — there is no server
-      // to hide it behind. See ARCHITECTURE.md → Privacy.
-      const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
-
-      const resumeSessionId = opts.resume
-        ? await extensionStore.get<string>(KEYS.activeSessionId)
-        : undefined;
-
       const result = await runHomepageBuild({
-        client,
-        bridge: browserBridge,
-        store: extensionStore,
-        userSystemPrompt: systemPrompt,
-        blockedSites: async () => (await loadSettings()).blockedSites,
-        model,
-        resumeSessionId,
+        ...run,
         signal: this.controller.signal,
         callbacks: {
           onPhase: (phase, detail) => this.onPhase(phase, detail),
@@ -190,19 +305,24 @@ export class BuildManager {
       this.state = { ...this.state, running: false, phase: "done" };
       this.broadcast({ kind: "done", code: result.code });
       await this.mirror(true);
-      console.log("[BuildManager] build done", { bytes: result.code.length, source: result.source });
+      console.log("[BuildManager] build done", { engine: result.engine, bytes: result.code.length, source: result.source });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.state = { ...this.state, running: false, phase: "error", error: message };
-      this.broadcast({ kind: "error", message });
-      await this.mirror(true);
-      this.notifyFailure(message);
+      await this.fail(describeError(error), { notify: true });
       console.error("[BuildManager] build failed", error);
+      // A sign-in that is gone for good is reflected on every tab right away.
+      if (error instanceof SiwcError) await this.broadcastAuth();
     } finally {
       this.running = false;
       this.controller = null;
       this.stopKeepalive();
     }
+  }
+
+  private async fail(message: string, opts: { notify: boolean }) {
+    this.state = { ...this.state, running: false, phase: "error", error: message };
+    this.broadcast({ kind: "error", message });
+    await this.mirror(true);
+    if (opts.notify) this.notifyFailure(message);
   }
 
   cancel() {
@@ -268,8 +388,8 @@ export class BuildManager {
   private startKeepalive() {
     this.keepalive ??= setInterval(() => {
       // A cheap chrome API call resets the ~30s idle-unload timer while a turn is
-      // in flight (the in-flight session fetch does most of the work; this covers
-      // the gaps between requests).
+      // in flight (the in-flight fetch does most of the work; this covers the
+      // gaps between requests).
       void browser.runtime.getPlatformInfo();
     }, KEEPALIVE_INTERVAL_MS);
   }
@@ -297,3 +417,12 @@ export class BuildManager {
     }
   }
 }
+
+/** A user-facing line for whatever the build threw. */
+function describeError(error: unknown): string {
+  if (error instanceof OpenAIError) return describeOpenAIError(error);
+  if (error instanceof Error) return error.message === "aborted" ? "Build cancelled." : error.message;
+  return String(error);
+}
+
+export type { Settings };

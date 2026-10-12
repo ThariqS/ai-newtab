@@ -1,4 +1,6 @@
-export const OUTPUT_PATH = "/mnt/session/outputs/homepage.tsx";
+import { OUTPUT_ROOT } from "./openai/sandbox";
+
+export const OUTPUT_PATH = `${OUTPUT_ROOT}/homepage.tsx`;
 
 /**
  * One set of instructions for the whole build: choose pages, extract items,

@@ -1,35 +1,43 @@
 import { useCallback, useEffect, useState } from "react";
-import { DEFAULT_MODEL, DEFAULT_BLOCKED_SITES, type HomepageModel } from "@homepage/agent-core";
+import {
+  CLAUDE_STORAGE_KEYS,
+  DEFAULT_MODEL,
+  DEFAULT_BLOCKED_SITES,
+  OPENAI_STORAGE_KEYS,
+  type EngineId,
+  type HomepageModel,
+} from "@homepage/agent-core";
 import { DEFAULT_REBUILD_INTERVAL_HOURS } from "@/lib/auto-rebuild";
-import { BUILD_STEPS } from "@/lib/protocol";
-import { KEYS, extensionStore, loadHomepage, loadSettings, saveSetting } from "@/lib/storage";
+import { BUILD_STEPS, type AuthState } from "@/lib/protocol";
+import { extensionStore, loadHomepage, loadSettings, saveSetting } from "@/lib/storage";
 import { toRenderable } from "@/lib/transpile";
-import { ApiKeySetup } from "./components/ApiKeySetup";
 import { BuildProgress } from "./components/BuildProgress";
 import { HomepagePreview } from "./components/HomepagePreview";
 import { SettingsModal } from "./components/SettingsModal";
+import { Setup } from "./components/Setup";
 import { btn, errorBox } from "./components/ui";
 import { useHomepageBuild } from "./useHomepageBuild";
 
 export default function App() {
   const [loading, setLoading] = useState(true);
-  const [apiKey, setApiKey] = useState<string | null>(null);
   const [systemPrompt, setSystemPrompt] = useState("");
   const [blockedSites, setBlockedSites] = useState<string[]>(DEFAULT_BLOCKED_SITES);
   const [model, setModel] = useState<HomepageModel>(DEFAULT_MODEL);
+  const [openaiModel, setOpenaiModel] = useState<string | null>(null);
   const [autoRebuild, setAutoRebuild] = useState(true);
   const [intervalHours, setIntervalHours] = useState(DEFAULT_REBUILD_INTERVAL_HOURS);
   /** Transpiled homepage, ready for Sandpack. */
   const [renderedCode, setRenderedCode] = useState<string | null>(null);
-  /** A session left mid-flight, offered as "Resume interrupted build". */
-  const [resumable, setResumable] = useState<string | null>(null);
+  /** A build left mid-flight (Claude session or OpenAI checkpoint), offered as "Resume interrupted build". */
+  const [resumable, setResumable] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   /** Expand the full progress view over an existing homepage. */
   const [viewProgress, setViewProgress] = useState(false);
   /** The error the user dismissed, so a stale banner doesn't linger. */
   const [dismissedError, setDismissedError] = useState<string | null>(null);
 
-  const { state, build, cancel } = useHomepageBuild((code) => setRenderedCode(toRenderable(code)));
+  const { state, auth, models, build, cancel, refreshAuth, signIn, cancelSignIn, signOut, loadModels } =
+    useHomepageBuild((code) => setRenderedCode(toRenderable(code)));
 
   // Once a build finishes, drop back to the homepage view.
   useEffect(() => {
@@ -41,18 +49,19 @@ export default function App() {
   useEffect(() => {
     (async () => {
       try {
-        const [settings, homepage, activeSession] = await Promise.all([
+        const [settings, homepage, activeSession, checkpoint] = await Promise.all([
           loadSettings(),
           loadHomepage(),
-          extensionStore.get<string>(KEYS.activeSessionId),
+          extensionStore.get<string>(CLAUDE_STORAGE_KEYS.activeSessionId),
+          extensionStore.get<unknown>(OPENAI_STORAGE_KEYS.activeBuild),
         ]);
-        setApiKey(settings.apiKey);
         setSystemPrompt(settings.systemPrompt);
         setBlockedSites(settings.blockedSites);
         setModel(settings.model);
+        setOpenaiModel(settings.openaiModel);
         setAutoRebuild(settings.autoRebuild);
         setIntervalHours(settings.rebuildIntervalHours ?? DEFAULT_REBUILD_INTERVAL_HOURS);
-        setResumable(activeSession ?? null);
+        setResumable(Boolean(activeSession || checkpoint));
         if (homepage?.code) setRenderedCode(toRenderable(homepage.code));
       } finally {
         setLoading(false);
@@ -60,10 +69,42 @@ export default function App() {
     })();
   }, []);
 
-  const saveKey = useCallback(async (key: string) => {
-    await saveSetting("apiKey", key);
-    setApiKey(key);
-  }, []);
+  // ---- credentials and engine: saved here, judged by the worker ------------
+  const chooseEngine = useCallback(
+    async (engine: EngineId) => {
+      await saveSetting("engine", engine);
+      refreshAuth();
+    },
+    [refreshAuth],
+  );
+  const chooseOpenAIMode = useCallback(
+    async (mode: AuthState["openai"]["mode"]) => {
+      await saveSetting("openaiAuthMode", mode);
+      refreshAuth();
+    },
+    [refreshAuth],
+  );
+  const saveAnthropicKey = useCallback(
+    async (key: string) => {
+      await saveSetting("apiKey", key);
+      refreshAuth();
+    },
+    [refreshAuth],
+  );
+  const saveOpenAIKey = useCallback(
+    async (key: string) => {
+      await saveSetting("openaiApiKey", key);
+      refreshAuth();
+    },
+    [refreshAuth],
+  );
+  const forgetKey = useCallback(async () => {
+    if (!auth) return;
+    if (auth.engine === "claude") await saveSetting("apiKey", null);
+    else await saveSetting("openaiApiKey", null);
+    setShowSettings(false);
+    refreshAuth();
+  }, [auth, refreshAuth]);
 
   const savePrompt = useCallback(
     async (prompt: string, sites: string[]) => {
@@ -82,6 +123,10 @@ export default function App() {
     setModel(next);
     await saveSetting("model", next);
   }, []);
+  const changeOpenAIModel = useCallback(async (next: string) => {
+    setOpenaiModel(next);
+    await saveSetting("openaiModel", next);
+  }, []);
   const toggleAutoRebuild = useCallback(async (next: boolean) => {
     setAutoRebuild(next);
     await saveSetting("autoRebuild", next);
@@ -91,8 +136,46 @@ export default function App() {
     await saveSetting("rebuildIntervalHours", next);
   }, []);
 
-  if (loading) return <div style={{ padding: 20, textAlign: "center" }}>Loading…</div>;
-  if (!apiKey) return <ApiKeySetup onSave={saveKey} />;
+  if (loading || auth === null) return <div style={{ padding: 20, textAlign: "center" }}>Loading…</div>;
+
+  if (!auth.ready) {
+    return (
+      <Setup
+        auth={auth}
+        onChooseEngine={chooseEngine}
+        onChooseOpenAIMode={chooseOpenAIMode}
+        onSaveAnthropicKey={saveAnthropicKey}
+        onSaveOpenAIKey={saveOpenAIKey}
+        onSignIn={signIn}
+        onCancelSignIn={cancelSignIn}
+        onSignOut={() => signOut()}
+      />
+    );
+  }
+
+  const settingsModal = showSettings && (
+    <SettingsModal
+      initialPrompt={systemPrompt}
+      blockedSites={blockedSites}
+      auth={auth}
+      onChangeEngine={chooseEngine}
+      model={model}
+      onChangeModel={changeModel}
+      onChangeOpenAIMode={chooseOpenAIMode}
+      openaiModel={openaiModel}
+      models={models}
+      onLoadModels={loadModels}
+      onChangeOpenAIModel={changeOpenAIModel}
+      onForgetKey={forgetKey}
+      onSignOut={signOut}
+      autoRebuild={autoRebuild}
+      onToggleAutoRebuild={toggleAutoRebuild}
+      intervalHours={intervalHours}
+      onChangeInterval={changeInterval}
+      onClose={() => setShowSettings(false)}
+      onSave={savePrompt}
+    />
+  );
 
   // With no homepage to fall back to, a running build takes over the tab.
   if (state.running && (!renderedCode || viewProgress)) {
@@ -114,9 +197,12 @@ export default function App() {
           homepage from what it finds today.
         </p>
         {state.error && (
-          <div style={{ ...errorBox, margin: "16px 0", padding: 12, borderRadius: 4 }}>{state.error}</div>
+          <div style={{ ...errorBox, margin: "16px 0", padding: 12, borderRadius: 4 }}>
+            {state.error}
+            <ActivityLog logs={state.logs} />
+          </div>
         )}
-        <div style={{ display: "flex", gap: 12, marginTop: 16 }}>
+        <div style={{ display: "flex", gap: 12, marginTop: 16, alignItems: "center" }}>
           <button style={btn} onClick={() => build()}>
             Build today&apos;s homepage
           </button>
@@ -125,7 +211,11 @@ export default function App() {
               Resume interrupted build
             </button>
           )}
+          <button style={{ ...btn, backgroundColor: "white", color: "#333", border: "1px solid #ddd" }} onClick={() => setShowSettings(true)}>
+            ⚙️ Settings
+          </button>
         </div>
+        {settingsModal}
       </div>
     );
   }
@@ -182,6 +272,7 @@ export default function App() {
         >
           <span style={{ flex: 1 }}>
             <b>Build failed.</b> {state.error}
+            <ActivityLog logs={state.logs} />
           </span>
           <button style={{ ...btn, padding: "4px 10px", backgroundColor: "#a02620" }} onClick={() => build()}>
             Retry
@@ -205,20 +296,32 @@ export default function App() {
 
       <HomepagePreview code={renderedCode} />
 
-      {showSettings && (
-        <SettingsModal
-          initialPrompt={systemPrompt}
-          blockedSites={blockedSites}
-          model={model}
-          onChangeModel={changeModel}
-          autoRebuild={autoRebuild}
-          onToggleAutoRebuild={toggleAutoRebuild}
-          intervalHours={intervalHours}
-          onChangeInterval={changeInterval}
-          onClose={() => setShowSettings(false)}
-          onSave={savePrompt}
-        />
-      )}
+      {settingsModal}
     </div>
+  );
+}
+
+/** The tail of the worker's log, folded under an error so a failure can be reported with context. */
+function ActivityLog({ logs }: { logs: string[] }) {
+  if (logs.length === 0) return null;
+  return (
+    <details style={{ marginTop: 8 }}>
+      <summary style={{ cursor: "pointer", fontSize: 12 }}>Activity log ({logs.length} lines)</summary>
+      <pre
+        style={{
+          margin: "6px 0 0",
+          padding: 8,
+          background: "rgba(0,0,0,0.04)",
+          borderRadius: 4,
+          fontSize: 11,
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-all",
+          maxHeight: 240,
+          overflow: "auto",
+        }}
+      >
+        {logs.slice(-25).join("\n")}
+      </pre>
+    </details>
   );
 }

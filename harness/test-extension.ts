@@ -3,7 +3,7 @@
  * of the system the Bun harness can't reach:
  *
  *   1. the MV3 service worker registers,
- *   2. the new-tab override renders (the API-key screen on a fresh profile),
+ *   2. the new-tab override renders (the engine setup screen on a fresh profile),
  *   3. the worker answers `subscribe` on the build port with a snapshot,
  *   4. `startBuild` with no API key fails cleanly with an error message,
  *   5. `chrome.history` is readable, so the `history` permission is real.
@@ -151,8 +151,8 @@ try {
   await sleep(2500); // let React mount
   const bodyText = await page.evaluate<string>("document.body.innerText");
   check(
-    "renders the API-key setup screen",
-    /Connect your Anthropic API key/i.test(bodyText),
+    "renders the setup screen with the Claude engine selected",
+    /Choose who writes your homepage/i.test(bodyText) && /Connect your Anthropic API key/i.test(bodyText),
     bodyText.split("\n").filter(Boolean)[0]?.slice(0, 50),
   );
 
@@ -181,6 +181,12 @@ try {
   const started = await talk({ kind: "startBuild" }, 3000);
   const error = started.find((m) => m.kind === "error");
   check("startBuild with no API key reports an error", /API key/i.test(error?.message ?? ""), error?.message);
+  const authMsg = subscribed.find((m) => m.kind === "auth");
+  check(
+    "subscribe also reports the credential state",
+    Boolean(authMsg) && authMsg.state.engine === "claude" && authMsg.state.ready === false,
+    JSON.stringify(authMsg?.state),
+  );
 
   // ---- 5. chrome.history is readable ---------------------------------------
   const domains = await page.evaluate<string[]>(`

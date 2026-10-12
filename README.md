@@ -16,18 +16,23 @@ terminal, a zine.
 
 > **Privacy, up front.** To build your homepage, the extension sends a summary of
 > your browsing history (top domains, visit counts, a few page titles) and the
-> cleaned-up HTML of up to 8 pages to the Anthropic API, using your own API key.
-> Those pages are loaded in your signed-in browser, so they can include private
-> content. The agent session and every uploaded page are deleted when each build
-> ends. Your API key stays in the extension's local storage. More detail in
-> [ARCHITECTURE.md](./ARCHITECTURE.md#privacy).
+> cleaned-up HTML of up to 10 pages to the model provider you chose, using your own
+> credentials. Those pages are loaded in your signed-in browser, so they can include
+> private content. With Claude, the agent session and every uploaded page are deleted
+> when each build ends. With OpenAI, nothing is stored server-side between requests
+> (`store: false`). Your API key or ChatGPT tokens stay in the extension's local
+> storage. More detail in [ARCHITECTURE.md](./ARCHITECTURE.md#privacy).
 
 ---
 
 ## Install
 
 You need Chrome (or another Chromium browser), [Node.js](https://nodejs.org) 20+,
-and an [Anthropic API key](https://console.anthropic.com).
+and one of:
+
+- an [Anthropic API key](https://console.anthropic.com) (the **Claude** engine, default), or
+- a **ChatGPT Plus/Pro** subscription, or an [OpenAI API key](https://platform.openai.com)
+  (the **OpenAI** engine).
 
 ```bash
 git clone https://github.com/ThariqS/ai-newtab.git
@@ -48,7 +53,12 @@ If Chrome asks whether to keep the changed new-tab page, choose **Keep it**.
 
 ## Your first homepage
 
-1. Open a new tab and paste your Anthropic API key.
+1. Open a new tab and choose an engine:
+   - **Claude**: paste your Anthropic API key.
+   - **OpenAI, with your ChatGPT plan**: click **Continue with ChatGPT**. A ChatGPT tab
+     opens: sign in, give the app a name if asked, and approve **ChatGPT plan usage**.
+     The tab closes itself and the new tab shows you as signed in.
+   - **OpenAI, with an API key**: pick "Use an OpenAI API key" and paste it.
 2. Click **Build today's homepage**.
 3. Watch it work. The progress view walks through each step: preparing the
    agent, reading your history, opening pages in your browser, analyzing them,
@@ -57,6 +67,17 @@ If Chrome asks whether to keep the changed new-tab page, choose **Keep it**.
 The first build takes a few minutes. You can close the tab while it runs, since
 the build lives in the extension's background worker and appears in any new tab
 you open.
+
+### How Sign in with ChatGPT works here
+
+ChatGPT plan usage is an OAuth flow for open-source, locally run apps. It requires a
+callback on `http://127.0.0.1:<port>/auth/callback`, which a browser extension cannot
+listen on. So the extension opens the ChatGPT authorization page in a tab and watches,
+with `chrome.webNavigation`, for the redirect to that address. It reads the
+authorization code off the URL before the (doomed) request is sent, closes the tab, and
+exchanges the code for tokens from the service worker. Tokens are refreshed
+automatically; **Sign out** in Settings revokes the session. There is no client secret
+anywhere: it is a public OAuth client with PKCE.
 
 ## Make it yours
 
@@ -82,50 +103,71 @@ history summaries and URLs requested through `getPageHtml`. A page that redirect
 onto a blocked host is dropped before its content is uploaded. Local-network
 addresses (localhost, private IPs, `.local` and `.internal` hosts) are always blocked.
 
-**Model.** Choose which Claude model writes your page:
+**Engine and model.** Switch between Claude and OpenAI here. With Claude, choose which
+model writes your page:
 
 - **Claude Sonnet 5.5** (default): the best balance of quality and cost.
 - **Claude Haiku 5.5**: the fastest and cheapest.
 - **Claude Opus 5.5**: the most careful editor, and the most expensive.
 
-The new model takes effect from your next build.
+With OpenAI, the list comes from `GET /v1/models` with your credentials: the models your
+plan or organization offers, in OpenAI's order. The first one is the default. The new
+model takes effect from your next build.
 
 **Rebuild automatically.** On by default. Once your homepage is older than the
 interval you pick (6, 12, 24 or 48 hours), the extension rebuilds it quietly in the
 background. It only starts after you've built once by hand, and it won't retry a
 failed build until the next interval, so it never loops.
 
+**ChatGPT account.** With the OpenAI engine, Settings shows who is signed in.
+**Sign out** revokes the session and keeps the app registration, so signing back in is
+one click. **Switch account** also forgets the registration, so the next sign-in can
+register another ChatGPT account or workspace.
+
 **↻ Rebuild** in the top-right corner rebuilds right away.
 
 ## Good to know
 
-- **Cost.** Each build is a single agent session billed to your API key. What it
-  costs depends on the model and on how much it reads. Haiku is the cheapest
-  choice, and you can turn off automatic rebuilds to build only when you ask.
-- **What it can see.** It ranks the sites in your history and opens up to 8 of
-  them per build. It skips search engines, webmail, banking and logged-out
-  marketing pages. Anything it can't open is reported, not hidden.
+- **Cost.** With an API key, each build is billed to that key; what it costs depends
+  on the model and on how much it reads. With a ChatGPT plan, builds count against
+  your plan's app usage instead: Plus plans share one five-hour limit across all apps,
+  Pro plans don't have it, and when a limit is hit the build stops with a clear message
+  (see [chatgpt.com/settings/usage](https://chatgpt.com/settings/usage)). You can turn
+  off automatic rebuilds to build only when you ask.
+- **What it can see.** It ranks the sites in your history, with each subreddit you
+  visit ranked on its own, and opens up to 10 of them per build. It skips search
+  engines, webmail, banking and logged-out marketing pages. Anything it can't open is
+  reported, not hidden.
 - **Links are real.** Every link on the page comes from a page the agent actually
-  read. It's told never to invent a URL.
-- **Interrupted builds.** If Chrome closes mid-build, the new tab offers
-  **Resume interrupted build** next time.
+  read. It's told never to invent a URL. A plain click opens it in this tab, like
+  Chrome's own new-tab page; cmd/ctrl-click opens a new tab.
+- **The look.** Without instructions, the page is a morning broadsheet: masthead,
+  lead story, a column grid, briefs. Write anything in Settings to change that.
+- **Interrupted builds.** If Chrome closes mid-build, the worker resumes it on its
+  next wake, and the new tab offers **Resume interrupted build**.
 - **Updating.** After pulling new code, run `npx pnpm@10.11.1 build` again, then
   click the reload icon on the extension in `chrome://extensions`.
 
 ## How it works
 
 1. **`getHistory`**: the agent gets a ranked summary of your most-visited domains.
-2. **`getPageHtml`**: it picks up to 8 pages, which the extension opens in a
+2. **`getPageHtml`**: it picks up to 10 pages, which the extension opens in a
    background window, cleans up, and mounts into the agent's sandbox as files.
-3. **`grep` / `read`**: the agent pulls headlines, posts and links out of those
-   files inside its sandbox.
+3. **`grep` / `read` / `glob`**: the agent pulls headlines, posts and links out of
+   those files inside its sandbox.
 4. **`write`**: it writes one React component, which the new tab renders.
 
-The extension's background worker drives a
-[Claude Managed Agents](https://docs.claude.com) session directly, with no server
-in between. The two custom tools run in the extension because they need
-`chrome.history` and `chrome.tabs`. Everything else happens in the agent's
-sandbox, where shell access is off: scraped pages are untrusted input.
+The two browser tools run in the extension because they need `chrome.history` and
+`chrome.tabs`. Where the rest runs depends on the engine:
+
+- **Claude**: the background worker drives a
+  [Claude Managed Agents](https://docs.claude.com) session directly, with no server
+  in between. The sandbox tools run in the session's sandbox, where shell access is off.
+- **OpenAI**: the background worker runs the agent loop itself over the
+  [Responses API](https://developers.openai.com/api/docs), one stateless request per
+  turn, and the sandbox is an in-memory one in plain TypeScript. Nothing is executable.
+
+Either way, scraped pages are untrusted input.
 
 See **[ARCHITECTURE.md](./ARCHITECTURE.md)** for the event flow, the layout, and
 the gotchas worth knowing.
@@ -133,7 +175,7 @@ the gotchas worth knowing.
 ## Development
 
 ```
-packages/agent-core   the agent loop: host-agnostic, no chrome.* or node:*
+packages/agent-core   the engines (claude/, openai/) and what they share: host-agnostic, no chrome.* or node:*
 apps/extension        the MV3 extension (WXT + React)
 harness               Bun scripts that run agent-core outside Chrome, and test the built extension
 ```
@@ -144,16 +186,19 @@ pnpm typecheck           # all packages
 pnpm test                # unit tests (no API calls; needs Bun)
 pnpm extension:test      # loads the built extension into headless Chrome (no API calls)
 
-cp .env.example .env     # add ANTHROPIC_API_KEY, then:
+cp .env.example .env     # add ANTHROPIC_API_KEY or OPENAI_API_KEY, or:
+pnpm agent:login         # sign in with ChatGPT from the terminal (real loopback listener)
+pnpm agent:models        # list the OpenAI models your credentials offer
 pnpm agent:run           # a full build against the real API, with fixture history
 pnpm agent:verify        # check the output actually renders
 ```
 
 ## Status
 
-Early and experimental. It's a tool you run yourself with your own key. Don't
-publish it to a store as-is: anyone with access to the browser profile can read
-the stored API key.
+Early and experimental. It's a tool you run yourself with your own credentials. Don't
+publish it to a store as-is: anyone with access to the browser profile can read the
+stored keys and tokens, and ChatGPT plan usage is only offered to open-source, locally
+run apps.
 
 ## License
 

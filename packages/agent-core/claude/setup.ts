@@ -1,7 +1,7 @@
 import type Anthropic from "@anthropic-ai/sdk";
-import { HOMEPAGE_SYSTEM_PROMPT } from "./prompt";
-import { GET_HISTORY_SCHEMA, GET_PAGE_HTML_SCHEMA } from "./schemas";
-import type { KVStore } from "./types";
+import { HOMEPAGE_SYSTEM_PROMPT } from "../prompt";
+import { GET_HISTORY_SCHEMA, GET_PAGE_HTML_SCHEMA } from "../schemas";
+import type { KVStore } from "../types";
 
 /** Models offered in Settings. The first is the default. */
 export const MODEL_CHOICES = [
