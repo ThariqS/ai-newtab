@@ -1,13 +1,14 @@
-import type { RawSiteMetadata } from "@homepage/agent-core";
+import { siteKeyForUrl, type RawSiteMetadata } from "@homepage/agent-core";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** Domains seen fewer times than this are noise, not interests. */
 const MIN_VISITS = 2;
 
 /**
- * Read chrome.history, group it by domain, rank by relevance, and return
- * all domains so agent-core can exclude blocked sites before counting and
- * narrowing for the context window in `buildHistoryDigest`.
+ * Read chrome.history, group it by site (a domain, or a community inside a
+ * hub such as a subreddit), rank by relevance, and return all of them so
+ * agent-core can exclude blocked sites before counting and narrowing for the
+ * context window in `buildHistoryDigest`.
  */
 export async function getHistorySites(
   daysToAnalyze: number,
@@ -42,7 +43,7 @@ function groupByDomain(
     }
     if (url.protocol !== "http:" && url.protocol !== "https:") continue; // chrome://, file://, etc.
 
-    const domain = url.hostname.replace(/^www\./, "");
+    const domain = siteKeyForUrl(url);
     let site = byDomain.get(domain);
     if (!site) {
       site = {

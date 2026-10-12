@@ -39,7 +39,7 @@ export const GET_PAGE_HTML_SCHEMA: ToolInputSchema = {
     urls: {
       type: "array",
       minItems: 1,
-      maxItems: 8,
+      maxItems: 10,
       items: { type: "string" },
       description:
         "URLs to load in real browser tabs. Authenticated, JS-rendered pages work — " +
