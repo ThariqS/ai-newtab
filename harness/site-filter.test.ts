@@ -33,7 +33,7 @@ async function runTools(urls: string[], blockedSites?: string[] | (() => Promise
   ];
   async function* stream() { if (!resume) yield* events; }
   const client = { beta: {
-    agents: { retrieve: async () => ({}) },
+    agents: { retrieve: async () => ({ id: "agent", version: 1, metadata: {} }), update: async () => ({}) },
     environments: { retrieve: async () => ({}) },
     sessions: {
       create: async () => ({ id: "session" }),
@@ -64,7 +64,7 @@ async function runTools(urls: string[], blockedSites?: string[] | (() => Promise
     getHistory: async () => ({ sites: fixtureHistory(), totalSitesSeen: fixtureHistory().length }),
     getPageHtml: scrape ?? (async ({ urls }) => { calls.push(urls); return { pages: [], failed: urls.map(url => ({ url, reason: "unavailable" })) }; }),
   };
-  await runHomepageBuild({ client, store, bridge, blockedSites, resumeSessionId: resume ? "session" : undefined, callbacks: { onLog: line => logs.push(line) } });
+  await runHomepageBuild({ engine: "claude", client, store, bridge, blockedSites, resumeSessionId: resume ? "session" : undefined, callbacks: { onLog: line => logs.push(line) } });
   return { results, calls, logs, uploads };
 }
 

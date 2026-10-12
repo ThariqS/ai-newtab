@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { ModelInfo } from "@homepage/agent-core";
 import {
   AGENT_PORT,
+  INITIAL_AUTH_STATE,
   INITIAL_BUILD_STATE,
   LOG_RETENTION,
+  type AuthState,
   type BuildMsg,
   type BuildState,
   type PageMsg,
@@ -32,17 +35,28 @@ function reduce(state: BuildState, msg: BuildMsg): BuildState {
       return { ...state, running: false, phase: "done" };
     case "error":
       return { ...state, running: false, phase: "error", error: msg.message };
+    default:
+      return state;
   }
+}
+
+export interface ModelsState {
+  models: ModelInfo[];
+  loading: boolean;
+  error: string | null;
 }
 
 /**
  * Thin client onto the worker-hosted build. Connects the port, subscribes for a
  * snapshot, and reduces incoming deltas into React state. Every open tab runs
  * one of these, so they all render the same live run. `onDone` receives the
- * new homepage's raw TSX.
+ * new homepage's raw TSX. The same port carries the sign-in state and the
+ * model list, so the page never touches a token.
  */
 export function useHomepageBuild(onDone: (code: string) => void) {
   const [state, setState] = useState<BuildState>(INITIAL_BUILD_STATE);
+  const [auth, setAuth] = useState<AuthState | null>(null);
+  const [models, setModels] = useState<ModelsState>({ models: [], loading: false, error: null });
   const portRef = useRef<Port | null>(null);
   const onDoneRef = useRef(onDone);
   onDoneRef.current = onDone;
@@ -52,7 +66,17 @@ export function useHomepageBuild(onDone: (code: string) => void) {
 
     const handleMsg = (raw: unknown) => {
       const msg = raw as BuildMsg;
-      if (msg.kind === "done") onDoneRef.current(msg.code);
+      switch (msg.kind) {
+        case "done":
+          onDoneRef.current(msg.code);
+          break;
+        case "auth":
+          setAuth(msg.state);
+          return;
+        case "models":
+          setModels({ models: msg.models, loading: false, error: msg.error });
+          return;
+      }
       setState((s) => reduce(s, msg));
     };
 
@@ -64,8 +88,8 @@ export function useHomepageBuild(onDone: (code: string) => void) {
       port.onDisconnect.addListener(() => {
         portRef.current = null;
         // A disconnect means the worker was torn down (update, crash, or the
-        // ~5 min port cap). Reconnecting wakes it, and its tick() reattaches to
-        // any interrupted run.
+        // ~5 min port cap). Reconnecting wakes it, and its tick() resumes any
+        // interrupted run.
         if (!disposed) setTimeout(connect, 500);
       });
       port.postMessage({ kind: "subscribe" } satisfies PageMsg);
@@ -86,16 +110,42 @@ export function useHomepageBuild(onDone: (code: string) => void) {
     };
   }, []);
 
-  const build = useCallback((opts?: { resume?: boolean }) => {
-    portRef.current?.postMessage({ kind: "startBuild", resume: opts?.resume } satisfies PageMsg);
-    // Optimistic: flip to the build screen now; the worker's snapshot and
-    // deltas take over from here.
-    setState({ ...INITIAL_BUILD_STATE, running: true, phase: "setup" });
-  }, []);
+  const post = useCallback((msg: PageMsg) => portRef.current?.postMessage(msg), []);
 
-  const cancel = useCallback(() => {
-    portRef.current?.postMessage({ kind: "cancel" } satisfies PageMsg);
-  }, []);
+  const build = useCallback(
+    (opts?: { resume?: boolean }) => {
+      post({ kind: "startBuild", resume: opts?.resume });
+      // Optimistic: flip to the build screen now; the worker's snapshot and
+      // deltas take over from here.
+      setState({ ...INITIAL_BUILD_STATE, running: true, phase: "setup" });
+    },
+    [post],
+  );
 
-  return { state, build, cancel };
+  const cancel = useCallback(() => post({ kind: "cancel" }), [post]);
+  /** Ask the worker to re-evaluate credentials after the page saved a key or switched engine. */
+  const refreshAuth = useCallback(() => post({ kind: "refreshAuth" }), [post]);
+
+  const signIn = useCallback(
+    (opts?: { newAccount?: boolean; promptConsent?: boolean }) => {
+      setAuth((a) => {
+        const base = a ?? INITIAL_AUTH_STATE;
+        return { ...base, openai: { ...base.openai, pending: true, error: null } };
+      });
+      post({ kind: "signIn", newAccount: opts?.newAccount, promptConsent: opts?.promptConsent });
+    },
+    [post],
+  );
+  const cancelSignIn = useCallback(() => post({ kind: "cancelSignIn" }), [post]);
+  const signOut = useCallback((opts?: { forget?: boolean }) => post({ kind: "signOut", forget: opts?.forget }), [post]);
+
+  const loadModels = useCallback(
+    (opts?: { refresh?: boolean }) => {
+      setModels((m) => ({ ...m, loading: true, error: null }));
+      post({ kind: "listModels", refresh: opts?.refresh });
+    },
+    [post],
+  );
+
+  return { state, auth, models, build, cancel, refreshAuth, signIn, cancelSignIn, signOut, loadModels };
 }
