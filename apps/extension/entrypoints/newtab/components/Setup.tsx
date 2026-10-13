@@ -34,8 +34,9 @@ export function Setup({
       flex: 1,
       padding: "10px 14px",
       borderRadius: 6,
-      border: selected ? "2px solid #0066cc" : "1px solid #ddd",
-      background: selected ? "#eef4ff" : "white",
+      border: selected ? "2px solid var(--accent)" : "1px solid var(--border)",
+      background: selected ? "var(--accent-wash)" : "var(--panel)",
+      color: "var(--fg)",
       cursor: "pointer",
       fontSize: 14,
       textAlign: "left",
@@ -44,23 +45,23 @@ export function Setup({
   return (
     <div style={{ maxWidth: 560, margin: "10vh auto", padding: 24, fontFamily: "system-ui" }}>
       <h1 style={{ fontSize: 24 }}>Choose who writes your homepage</h1>
-      <p style={{ color: "#555", lineHeight: 1.6 }}>
+      <p style={{ color: "var(--muted)", lineHeight: 1.6 }}>
         Each build is one agent run. Pick the engine, then connect it. You can switch later in Settings.
       </p>
 
       <div style={{ display: "flex", gap: 12, margin: "16px 0" }}>
         <button style={choice(auth.engine === "claude")} onClick={() => onChooseEngine("claude")}>
           <b>Claude</b>
-          <div style={{ color: "#666", fontSize: 12, marginTop: 4 }}>Anthropic API key, billed per build</div>
+          <div style={{ color: "var(--muted)", fontSize: 12, marginTop: 4 }}>Anthropic API key, billed per build</div>
         </button>
         <button style={choice(auth.engine === "openai")} onClick={() => onChooseEngine("openai")}>
           <b>OpenAI</b>
-          <div style={{ color: "#666", fontSize: 12, marginTop: 4 }}>Your ChatGPT plan, or an API key</div>
+          <div style={{ color: "var(--muted)", fontSize: 12, marginTop: 4 }}>Your ChatGPT plan, or an API key</div>
         </button>
       </div>
 
       {auth.engine === "openai" && (
-        <div style={{ display: "flex", gap: 16, margin: "0 0 20px", fontSize: 14, color: "#333" }}>
+        <div style={{ display: "flex", gap: 16, margin: "0 0 20px", fontSize: 14 }}>
           <label style={{ cursor: "pointer" }}>
             <input type="radio" checked={auth.openai.mode === "siwc"} onChange={() => onChooseOpenAIMode("siwc")} />{" "}
             Use my ChatGPT plan (Sign in with ChatGPT)
@@ -72,7 +73,7 @@ export function Setup({
         </div>
       )}
 
-      <div style={{ borderTop: "1px solid #eee", paddingTop: 20 }}>
+      <div style={{ borderTop: "1px solid var(--border)", paddingTop: 20 }}>
         {auth.engine === "claude" && <ApiKeySetup provider="anthropic" onSave={onSaveAnthropicKey} />}
         {auth.engine === "openai" && auth.openai.mode === "apiKey" && (
           <ApiKeySetup provider="openai" onSave={onSaveOpenAIKey} />

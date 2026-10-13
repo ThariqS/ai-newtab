@@ -150,6 +150,17 @@ it runs sandboxed, not in the extension's own page. That iframe has no
 `postMessage` and the page navigates itself; modified clicks open a new tab through a
 `<base target="_blank">`.
 
+### Theme
+
+`lib/theme.ts` keeps one preference, `system | dark | light`, in `chrome.storage.local`
+and mirrored in `localStorage` so `theme-boot.ts` can apply it before React renders
+(MV3 forbids inline scripts, hence a module imported first). It lands as `data-theme` on
+`<html>`; `styles.css` resolves colour tokens from that attribute and from
+`prefers-color-scheme`, and every component uses the tokens. The preview iframe is
+cross-origin, so its bootstrap receives the preference baked in and over `postMessage`
+on change, and sets the same `data-theme` on its own `<html>`; the component contract
+asks the model to honour it.
+
 ## Layout
 
 ```

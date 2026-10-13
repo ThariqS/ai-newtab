@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { btn } from "./ui";
+import { btn, input } from "./ui";
 
 const PROVIDERS = {
   anthropic: {
@@ -32,7 +32,7 @@ export function ApiKeySetup({
   return (
     <div>
       <h2 style={{ fontSize: 20, marginTop: 0 }}>{p.title}</h2>
-      <p style={{ color: "#555", lineHeight: 1.6 }}>
+      <p style={{ color: "var(--muted)", lineHeight: 1.6 }}>
         The agent runs inside this extension and talks to {p.api} directly. Your key is stored
         in <code>chrome.storage.local</code> on this machine and is never sent anywhere else.
         Keys come from {p.console}.
@@ -42,15 +42,7 @@ export function ApiKeySetup({
         value={value}
         onChange={(e) => setValue(e.target.value)}
         placeholder={p.placeholder}
-        style={{
-          width: "100%",
-          boxSizing: "border-box",
-          padding: 12,
-          fontSize: 14,
-          borderRadius: 4,
-          border: "1px solid #ddd",
-          fontFamily: "ui-monospace, monospace",
-        }}
+        style={{ ...input, fontFamily: "ui-monospace, monospace" }}
       />
       <button
         style={{ ...btn, marginTop: 16, opacity: valid ? 1 : 0.5 }}

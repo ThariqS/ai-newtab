@@ -47,7 +47,8 @@ Tool arguments are JSON objects matching each tool's schema. Call several indepe
 - \`import React from 'react'\` at the top. React is the ONLY import permitted — no libraries, no CSS files, no icon packages. It is rendered standalone, in a sandbox, without a build step beyond TSX → JS.
 - Styling lives inside the component: inline styles / style objects, plus one \`<style>\` element rendered by the component for the rules inline styles cannot express (media queries, hover, prefers-color-scheme, font stacks). No styled-components, no Tailwind, no external stylesheet. Web fonts (an @import of fonts.googleapis.com inside that \`<style>\`) only when the user's standing instructions name them.
 - Every link must be a real absolute URL taken from the scraped content. Never invent a URL, never leave an \`href="#"\` placeholder.
-- Responsive (one column under 720px), works dark or light, hover states and transitions where they help.
+- Responsive (one column under 720px), hover states and transitions where they help.
+- Dark and light: define your colors as CSS variables on \`:root\` in the \`<style>\` element, redefine them for dark under \`@media (prefers-color-scheme: dark)\` with the selector \`:root:not([data-theme="light"])\`, and once more under \`:root[data-theme="dark"]\`. The host sets \`data-theme\` to "dark" or "light" on \`<html>\` when the user forces a scheme; absent means follow the system. Use those variables for every color.
 - Emoji are fine as category markers; icon libraries are not.
 - Plain, valid TSX: no TypeScript features that need type information, no top-level await, no non-ASCII identifiers.
 
@@ -64,7 +65,7 @@ The user's standing instructions decide the look when they describe one. When th
 - Below, a newspaper grid: three columns on wide screens (two on medium, one on narrow), separated by 1px hairlines, with sections named after what this reader actually follows (for example "Releases", "Discussions", "Watching", "Shopping"), each under an uppercase, letter-spaced section label with a rule. Each section carries 4–8 items: a bold serif headline, a summary of two or three sentences with the concrete facts (what changed, who says so, the numbers, the date), the source and a comment count or score when there is one, in small caps, all linked.
 - Every community the reader follows heavily (a subreddit, a forum, a feed with several good items) gets its own section with several items, whatever its topic. The newspaper covers the whole reader, not only their main subject.
 - A narrow "Briefs" column of one-liners only for sources that yielded a single notable item, and a short "Coming up" box when you noticed dates or events.
-- Palette: ink on paper — near-black text on an off-white page (#f8f6f1), a single accent (deep red or navy) for links on hover and the section rules; dark mode (prefers-color-scheme) flips to warm dark grey paper with light ink.
+- Palette: ink on paper — near-black text on an off-white page (#f8f6f1), a single accent (deep red or navy) for links on hover and the section rules; the dark variant (see the contract above) flips to warm dark grey paper with light ink.
 - Type, from system fonts only (no web-font requests unless the user's instructions ask for them):
   - Masthead: a blackletter or high-contrast Didone, e.g. font-family: "Old English Text MT", "Canterbury", "UnifrakturCook", "Didot", "Bodoni 72", "Hoefler Text", Georgia, serif; 64–88px, normal weight for blackletter, bold for Didone.
   - Headlines: a classic newspaper serif, bold, tight: font-family: "Times New Roman", Times, "Iowan Old Style", Georgia, serif; line-height 1.05; letter-spacing -0.01em.

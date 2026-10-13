@@ -6,7 +6,8 @@
  *   2. the new-tab override renders (the engine setup screen on a fresh profile),
  *   3. the worker answers `subscribe` on the build port with a snapshot,
  *   4. `startBuild` with no API key fails cleanly with an error message,
- *   5. `chrome.history` is readable, so the `history` permission is real.
+ *   5. `chrome.history` is readable, so the `history` permission is real,
+ *   6. the theme toggle cycles system → dark → light, restyles the page and persists.
  *
  * No API calls are made. Chrome 136+ ignores `--load-extension`, so the
  * extension is loaded over CDP's Extensions domain instead.
@@ -15,7 +16,7 @@
  * Set CHROME_PATH if Chrome isn't at the default macOS location.
  */
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -208,6 +209,81 @@ try {
     domains.includes("news.ycombinator.com"),
     domains.join(", "),
   );
+
+  // ---- 6. theme toggle ------------------------------------------------------
+  const readTheme = () =>
+    page.evaluate<{ attr: string | null; bg: string; toggle: string | null; stored: string | null }>(`
+      (async () => ({
+        attr: document.documentElement.getAttribute("data-theme"),
+        bg: getComputedStyle(document.body).backgroundColor,
+        toggle: document.querySelector("[data-theme-toggle]")?.getAttribute("data-theme-toggle") ?? null,
+        stored: (await chrome.storage.local.get("theme")).theme ?? null,
+      }))()
+    `);
+  const clickToggle = () =>
+    page.evaluate<boolean>(`(() => { const b = document.querySelector("[data-theme-toggle]"); if (!b) return false; b.click(); return true; })()`);
+  const shots = join(import.meta.dir, "out");
+  mkdirSync(shots, { recursive: true });
+  const shoot = async (name: string) => {
+    const r = await page.send("Page.captureScreenshot", { format: "png" });
+    if (r.result?.data) writeFileSync(join(shots, `theme-${name}.png`), Buffer.from(r.result.data, "base64"));
+  };
+
+  const initial = await readTheme();
+  check("theme starts on system (no data-theme)", initial.toggle === "system" && initial.attr === null, JSON.stringify(initial));
+  await shoot("system");
+  check("toggle present", await clickToggle());
+  await sleep(400);
+  const dark = await readTheme();
+  check(
+    "one click forces dark: data-theme, stored preference and a dark background",
+    dark.toggle === "dark" && dark.attr === "dark" && dark.stored === "dark" && dark.bg === "rgb(21, 23, 28)",
+    JSON.stringify(dark),
+  );
+  await shoot("dark");
+  await clickToggle();
+  await sleep(400);
+  const light = await readTheme();
+  check(
+    "second click forces light: data-theme, stored preference and a white background",
+    light.toggle === "light" && light.attr === "light" && light.stored === "light" && light.bg === "rgb(255, 255, 255)",
+    JSON.stringify(light),
+  );
+  await shoot("light");
+  await clickToggle();
+  await sleep(400);
+  const back = await readTheme();
+  check("third click returns to system", back.toggle === "system" && back.attr === null && back.stored === "system", JSON.stringify(back));
+
+  // With a key saved and dark forced, the build screen and the settings modal
+  // must pick the tokens up too (a reload applies the mirrored preference first).
+  await page.evaluate("chrome.storage.local.set({ apiKey: 'sk-ant-test', theme: 'dark' })");
+  await page.send("Page.reload");
+  await sleep(2500);
+  const buildScreen = await readTheme();
+  const buildText = await page.evaluate<string>("document.body.innerText");
+  check(
+    "after a reload the stored dark theme applies before React renders",
+    buildScreen.attr === "dark" && /Build your homepage/.test(buildText),
+    JSON.stringify(buildScreen),
+  );
+  await shoot("dark-build");
+
+  // A saved homepage brings the toolbar (Rebuild, Settings, theme) and the preview.
+  const homepage = {
+    code: "import React from 'react';\nexport default function PersonalizedHomepage() { return <h1>Hello</h1>; }",
+    timestamp: new Date().toISOString(),
+  };
+  await page.evaluate(`chrome.storage.local.set({ homepageData: ${JSON.stringify(homepage)} })`);
+  await page.send("Page.reload");
+  await sleep(3000);
+  const opened = await page.evaluate<boolean>(
+    `(() => { const b = [...document.querySelectorAll("button")].find((b) => /Settings/.test(b.textContent)); if (!b) return false; b.click(); return true; })()`,
+  );
+  await sleep(400);
+  const modalText = await page.evaluate<string>("document.body.innerText");
+  check("settings modal opens over the homepage, themed", opened && /Customize your homepage/.test(modalText));
+  await shoot("dark-settings");
 
   page.close();
   browser.close();

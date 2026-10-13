@@ -126,6 +126,10 @@ register another ChatGPT account or workspace.
 
 **↻ Rebuild** in the top-right corner rebuilds right away.
 
+**Dark mode.** The icon button next to the buttons cycles **system → dark → light**
+(screen, moon, sun). It restyles the extension's own screens and tells the generated page which
+scheme you forced; pages built from now on honour it, older ones follow the system.
+
 ## Good to know
 
 - **Cost.** With an API key, each build is billed to that key; what it costs depends
