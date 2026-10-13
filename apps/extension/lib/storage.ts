@@ -44,6 +44,8 @@ export const KEYS = {
   theme: "theme",
   /** Look applied over the generated page without rebuilding: a SkinId, or null for the agent's own look. */
   skin: "skin",
+  /** Where a plain click on a homepage link goes: "newTab" (default) or "sameTab". */
+  linkTarget: "linkTarget",
 } as const;
 
 export interface Homepage {
@@ -68,7 +70,10 @@ export interface Settings {
   autoRebuild: boolean;
   rebuildIntervalHours: number | null;
   skin: SkinId | null;
+  linkTarget: LinkTarget;
 }
+
+export type LinkTarget = "newTab" | "sameTab";
 
 export interface ModelCatalog {
   models: ModelInfo[];
@@ -102,6 +107,7 @@ export async function loadSettings(): Promise<Settings> {
     KEYS.autoRebuild,
     KEYS.rebuildIntervalHours,
     KEYS.skin,
+    KEYS.linkTarget,
   ]);
   const model = s[KEYS.model] as string | undefined;
   return {
@@ -117,6 +123,7 @@ export async function loadSettings(): Promise<Settings> {
     autoRebuild: s[KEYS.autoRebuild] !== false,
     rebuildIntervalHours: (s[KEYS.rebuildIntervalHours] as number | undefined) ?? null,
     skin: findSkin(s[KEYS.skin] as string | undefined)?.id ?? null,
+    linkTarget: s[KEYS.linkTarget] === "sameTab" ? "sameTab" : "newTab",
   };
 }
 

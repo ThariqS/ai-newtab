@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ENGINES, MODEL_CHOICES, SKINS, findSkin, normalizeBlockList, type EngineId, type HomepageModel, type SkinId } from "@homepage/agent-core";
 import { REBUILD_INTERVAL_CHOICES } from "@/lib/auto-rebuild";
 import type { AuthState } from "@/lib/protocol";
+import type { LinkTarget } from "@/lib/storage";
 import type { ModelsState } from "../useHomepageBuild";
 import { btn, btnQuiet } from "./ui";
 
@@ -24,6 +25,8 @@ export function SettingsModal({
   onSignOut,
   skin,
   onChangeSkin,
+  linkTarget,
+  onChangeLinkTarget,
   autoRebuild,
   onToggleAutoRebuild,
   intervalHours,
@@ -49,6 +52,8 @@ export function SettingsModal({
   /** The look applied over the generated page (instant, no rebuild); null = the agent's own. */
   skin: SkinId | null;
   onChangeSkin: (next: SkinId | null) => void;
+  linkTarget: LinkTarget;
+  onChangeLinkTarget: (next: LinkTarget) => void;
   autoRebuild: boolean;
   onToggleAutoRebuild: (next: boolean) => void;
   intervalHours: number;
@@ -129,6 +134,16 @@ export function SettingsModal({
           <p style={{ color: "var(--faint)", fontSize: 12, margin: "6px 0 0" }}>
             {findSkin(skin)?.description ??
               "A look re-dresses the page instantly: typography, palette and rules change, the stories stay. Pages built before this version follow it from their next build."}
+          </p>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12, fontSize: 14 }}>
+            Links open in
+            <select value={linkTarget} onChange={(e) => onChangeLinkTarget(e.target.value === "sameTab" ? "sameTab" : "newTab")} style={selectStyle}>
+              <option value="newTab">a new tab</option>
+              <option value="sameTab">this tab</option>
+            </select>
+          </label>
+          <p style={{ color: "var(--faint)", fontSize: 12, margin: "6px 0 0" }}>
+            Cmd/Ctrl-click and the middle button always open a background tab.
           </p>
         </div>
 

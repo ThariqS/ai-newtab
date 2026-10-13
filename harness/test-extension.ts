@@ -378,6 +378,18 @@ try {
   const storedSkin = await page.evaluate<string | null>(`chrome.storage.local.get("skin").then((r) => r.skin ?? null)`);
   check("every look can be picked and the choice is stored", picked && storedSkin === "boreal", String(storedSkin));
 
+  // ---- 8. "Links open in" setting ------------------------------------------
+  const linkSet = await page.evaluate<boolean>(`(() => {
+    const sel = [...document.querySelectorAll("select")].find((s) => [...s.options].some((o) => o.value === "sameTab"));
+    if (!sel) return false;
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value").set.call(sel, "sameTab");
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    return true;
+  })()`);
+  await sleep(300);
+  const storedTarget = await page.evaluate<string | null>(`chrome.storage.local.get("linkTarget").then((r) => r.linkTarget ?? null)`);
+  check("the link-target setting is offered and stored", linkSet && storedTarget === "sameTab", String(storedTarget));
+
   page.close();
   browser.close();
 } catch (err) {

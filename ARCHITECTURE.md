@@ -156,10 +156,11 @@ mirrored to storage so a tab opened while the worker is asleep paints instantly.
 
 The finished component renders inside a Sandpack iframe
 (`entrypoints/newtab/components/HomepagePreview.tsx`): it is model-written code, so
-it runs sandboxed, not in the extension's own page. That iframe has no
-`allow-top-navigation`, so a plain click on a link is handed to the parent page over
-`postMessage` and the page navigates itself; modified clicks open a new tab through a
-`<base target="_blank">`.
+it runs sandboxed, not in the extension's own page. That iframe has neither
+`allow-top-navigation` nor `allow-popups-to-escape-sandbox`, so every click on a link is
+handed to the parent page over `postMessage`, which opens it from the extension context:
+a new tab or this tab per the "Links open in" setting, a background tab for modified
+clicks. A link opened from inside the sandbox would inherit its restrictions.
 
 ### Theme
 

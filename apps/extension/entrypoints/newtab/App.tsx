@@ -11,7 +11,7 @@ import {
 } from "@homepage/agent-core";
 import { DEFAULT_REBUILD_INTERVAL_HOURS } from "@/lib/auto-rebuild";
 import { BUILD_STEPS, type AuthState } from "@/lib/protocol";
-import { extensionStore, loadHomepage, loadSettings, saveSetting } from "@/lib/storage";
+import { extensionStore, loadHomepage, loadSettings, saveSetting, type LinkTarget } from "@/lib/storage";
 import {
   applyTheme,
   loadThemePreference,
@@ -39,6 +39,7 @@ export default function App() {
   const [openaiModel, setOpenaiModel] = useState<string | null>(null);
   /** The look applied over the generated page; null = as built. */
   const [skin, setSkin] = useState<SkinId | null>(null);
+  const [linkTarget, setLinkTarget] = useState<LinkTarget>("newTab");
   const [autoRebuild, setAutoRebuild] = useState(true);
   const [intervalHours, setIntervalHours] = useState(DEFAULT_REBUILD_INTERVAL_HOURS);
   /** Transpiled homepage, ready for Sandpack. */
@@ -100,6 +101,7 @@ export default function App() {
         setModel(settings.model);
         setOpenaiModel(settings.openaiModel);
         setSkin(settings.skin);
+        setLinkTarget(settings.linkTarget);
         setAutoRebuild(settings.autoRebuild);
         setIntervalHours(settings.rebuildIntervalHours ?? DEFAULT_REBUILD_INTERVAL_HOURS);
         setResumable(Boolean(activeSession || checkpoint));
@@ -172,6 +174,10 @@ export default function App() {
     setSkin(next);
     await saveSetting("skin", next);
   }, []);
+  const changeLinkTarget = useCallback(async (next: LinkTarget) => {
+    setLinkTarget(next);
+    await saveSetting("linkTarget", next);
+  }, []);
   const toggleAutoRebuild = useCallback(async (next: boolean) => {
     setAutoRebuild(next);
     await saveSetting("autoRebuild", next);
@@ -218,6 +224,8 @@ export default function App() {
       onSignOut={signOut}
       skin={skin}
       onChangeSkin={changeSkin}
+      linkTarget={linkTarget}
+      onChangeLinkTarget={changeLinkTarget}
       autoRebuild={autoRebuild}
       onToggleAutoRebuild={toggleAutoRebuild}
       intervalHours={intervalHours}
@@ -346,7 +354,7 @@ export default function App() {
         </div>
       )}
 
-      <HomepagePreview code={renderedCode} theme={theme} resolvedTheme={resolvedTheme} skin={findSkin(skin) ?? null} />
+      <HomepagePreview code={renderedCode} theme={theme} resolvedTheme={resolvedTheme} skin={findSkin(skin) ?? null} linkTarget={linkTarget} />
 
       {settingsModal}
     </div>

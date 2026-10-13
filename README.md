@@ -151,8 +151,9 @@ scheme you forced; pages built from now on honour it, older ones follow the syst
   engines, webmail, banking and logged-out marketing pages. Anything it can't open is
   reported, not hidden.
 - **Links are real.** Every link on the page comes from a page the agent actually
-  read. It's told never to invent a URL. A plain click opens it in this tab, like
-  Chrome's own new-tab page; cmd/ctrl-click opens a new tab.
+  read. It's told never to invent a URL. A plain click opens it in a new tab, or in
+  this tab if you prefer (Settings → "Links open in"); cmd/ctrl-click and the middle
+  button always open a background tab.
 - **The look.** Without instructions, the page is a morning broadsheet: masthead,
   lead story, a column grid, briefs. Write anything in Settings to change that.
 - **Interrupted builds.** If Chrome closes mid-build, the worker resumes it on its

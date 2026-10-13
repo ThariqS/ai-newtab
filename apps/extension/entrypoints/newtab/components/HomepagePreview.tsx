@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { SandpackLayout, SandpackPreview, SandpackProvider } from "@codesandbox/sandpack-react";
 import { skinCss, type Skin } from "@homepage/agent-core";
+import type { LinkTarget } from "@/lib/storage";
 import type { ResolvedTheme, ThemePreference } from "@/lib/theme";
 
 /** Message the preview posts to this page when a link is clicked. */
@@ -16,12 +17,14 @@ function skinPayload(skin: Skin | null): { id: string | null; css: string } {
 }
 
 /**
- * The preview iframe is sandboxed without allow-top-navigation and is
- * cross-origin, so two things are arranged from its bootstrap:
+ * The preview iframe is sandboxed (no allow-top-navigation, no
+ * allow-popups-to-escape-sandbox) and cross-origin, so two things are arranged
+ * from its bootstrap:
  *
- * - Links: a plain click is handed to the parent page, which navigates this
- *   tab (like Chrome's own new-tab page); modified clicks (cmd/ctrl/shift,
- *   middle button) keep the browser's new-tab behaviour through <base target>.
+ * - Links: every click on an http(s) link is handed to the parent page, which
+ *   opens it from the extension context (a real tab, not a sandboxed popup)
+ *   according to the "Links open in" setting; modified clicks (cmd/ctrl/shift,
+ *   middle button) always open a background tab.
  * - Theme: the user's preference is applied as `data-theme` / `color-scheme`
  *   on the sandbox's <html>, baked in at build time and updated over
  *   postMessage. The component contract asks the model to honour it.
@@ -31,20 +34,20 @@ function indexJs(preference: ThemePreference, skin: Skin | null): string {
 import ReactDOM from "react-dom/client";
 import App from "./App";
 
-const base = document.createElement("base");
-base.target = "_blank";
-document.head.prepend(base);
-
-document.addEventListener("click", (event) => {
-  if (event.defaultPrevented || event.button !== 0) return;
-  if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+function onLinkClick(event) {
+  if (event.defaultPrevented) return;
   const anchor = event.target.closest && event.target.closest("a[href]");
   if (!anchor) return;
   const href = anchor.href;
   if (!/^https?:/i.test(href)) return;
+  const middle = event.button === 1;
+  if (event.button !== 0 && !middle) return;
   event.preventDefault();
-  window.parent.postMessage({ type: ${JSON.stringify(NAVIGATE_MESSAGE)}, href }, "*");
-});
+  const background = middle || event.metaKey || event.ctrlKey || event.shiftKey;
+  window.parent.postMessage({ type: ${JSON.stringify(NAVIGATE_MESSAGE)}, href, background }, "*");
+}
+document.addEventListener("click", onLinkClick);
+document.addEventListener("auxclick", onLinkClick);
 
 function applyTheme(theme) {
   const root = document.documentElement;
@@ -102,6 +105,7 @@ export function HomepagePreview({
   theme,
   resolvedTheme,
   skin,
+  linkTarget,
 }: {
   code: string;
   /** The user's preference, baked into the bootstrap so the first paint is right. */
@@ -110,6 +114,8 @@ export function HomepagePreview({
   resolvedTheme: ResolvedTheme;
   /** The look applied over the page, or null for the agent's own. */
   skin: Skin | null;
+  /** Where a plain click on a link goes. */
+  linkTarget: LinkTarget;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   // The bootstrap is baked once; later theme and look changes go over
@@ -119,19 +125,25 @@ export function HomepagePreview({
 
   const ownFrames = () => [...(containerRef.current?.querySelectorAll("iframe") ?? [])].map((f) => f.contentWindow);
 
-  // Navigate this tab when the preview reports a plain click on a link.
+  // Open links the preview reports, from the extension context.
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
-      const data = event.data as { type?: unknown; href?: unknown } | null;
+      const data = event.data as { type?: unknown; href?: unknown; background?: unknown } | null;
       if (!data || data.type !== NAVIGATE_MESSAGE || typeof data.href !== "string") return;
       // Only our own preview frame may steer this page.
       if (!ownFrames().includes(event.source as Window)) return;
       if (!/^https?:\/\//i.test(data.href)) return;
-      window.location.assign(data.href);
+      if (data.background === true) {
+        void browser.tabs.create({ url: data.href, active: false });
+      } else if (linkTarget === "newTab") {
+        void browser.tabs.create({ url: data.href, active: true });
+      } else {
+        window.location.assign(data.href);
+      }
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, []);
+  }, [linkTarget]);
 
   useEffect(() => {
     for (const frame of ownFrames()) frame?.postMessage({ type: THEME_MESSAGE, theme }, "*");
