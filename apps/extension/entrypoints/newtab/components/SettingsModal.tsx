@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { MODEL_CHOICES, normalizeBlockList, type HomepageModel } from "@homepage/agent-core";
 import { REBUILD_INTERVAL_CHOICES } from "@/lib/auto-rebuild";
-import { btn } from "./ui";
+import { btn, btnQuiet } from "./ui";
 
 export function SettingsModal({
   initialPrompt,
@@ -34,7 +34,7 @@ export function SettingsModal({
       style={{
         position: "fixed",
         inset: 0,
-        backgroundColor: "rgba(0,0,0,0.5)",
+        backgroundColor: "var(--overlay)",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
@@ -42,9 +42,9 @@ export function SettingsModal({
       }}
       onClick={(e) => e.target === e.currentTarget && onClose()}
     >
-      <div style={{ backgroundColor: "white", borderRadius: 8, padding: 24, width: "90%", maxWidth: 600, maxHeight: "90vh", overflowY: "auto" }}>
-        <h2 style={{ marginTop: 0, color: "#333" }}>Customize your homepage</h2>
-        <p style={{ color: "#666" }}>Standing instructions applied to every build.</p>
+      <div style={{ backgroundColor: "var(--bg)", color: "var(--fg)", borderRadius: 8, padding: 24, width: "90%", maxWidth: 600, maxHeight: "90vh", overflowY: "auto" }}>
+        <h2 style={{ marginTop: 0 }}>Customize your homepage</h2>
+        <p style={{ color: "var(--muted)" }}>Standing instructions applied to every build.</p>
         <textarea
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
@@ -55,30 +55,32 @@ export function SettingsModal({
             padding: 12,
             fontSize: 14,
             borderRadius: 4,
-            border: "1px solid #ddd",
+            border: "1px solid var(--border)",
+            background: "var(--panel)",
+            color: "var(--fg)",
             fontFamily: "inherit",
           }}
         />
-        <label style={{ display: "block", marginTop: 16, color: "#333", fontSize: 14 }}>
+        <label style={{ display: "block", marginTop: 16, fontSize: 14 }}>
           Sites the agent never reads
           <textarea
             value={blockedDraft}
             onChange={(e) => setBlockedDraft(e.target.value)}
             aria-describedby="blocked-sites-help"
-            style={{ width: "100%", boxSizing: "border-box", minHeight: 120, marginTop: 8, padding: 12, fontSize: 14, borderRadius: 4, border: "1px solid #ddd", fontFamily: "inherit" }}
+            style={{ width: "100%", boxSizing: "border-box", minHeight: 120, marginTop: 8, padding: 12, fontSize: 14, borderRadius: 4, border: "1px solid var(--border)", background: "var(--panel)", color: "var(--fg)", fontFamily: "inherit" }}
           />
         </label>
-        <p id="blocked-sites-help" style={{ color: "#888", fontSize: 12, margin: "6px 0 0" }}>
+        <p id="blocked-sites-help" style={{ color: "var(--faint)", fontSize: 12, margin: "6px 0 0" }}>
           One per line. Subdomains are included. Use *.example.com for wildcards.
         </p>
         <label
-          style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 16, color: "#333", fontSize: 14 }}
+          style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 16, fontSize: 14 }}
         >
           Model
           <select
             value={model}
             onChange={(e) => onChangeModel(e.target.value as HomepageModel)}
-            style={{ padding: "4px 8px", fontSize: 14, borderRadius: 4, border: "1px solid #ddd" }}
+            style={{ padding: "4px 8px", fontSize: 14, borderRadius: 4, border: "1px solid var(--border)", background: "var(--panel)", color: "var(--fg)" }}
           >
             {MODEL_CHOICES.map((m) => (
               <option key={m.id} value={m.id}>
@@ -93,7 +95,6 @@ export function SettingsModal({
             alignItems: "center",
             gap: 8,
             marginTop: 16,
-            color: "#333",
             fontSize: 14,
             cursor: "pointer",
           }}
@@ -112,7 +113,7 @@ export function SettingsModal({
             gap: 8,
             marginTop: 10,
             marginLeft: 24,
-            color: autoRebuild ? "#333" : "#aaa",
+            color: autoRebuild ? "var(--fg)" : "var(--faint)",
             fontSize: 14,
           }}
         >
@@ -121,7 +122,7 @@ export function SettingsModal({
             value={intervalHours}
             disabled={!autoRebuild}
             onChange={(e) => onChangeInterval(Number(e.target.value))}
-            style={{ padding: "4px 8px", fontSize: 14, borderRadius: 4, border: "1px solid #ddd" }}
+            style={{ padding: "4px 8px", fontSize: 14, borderRadius: 4, border: "1px solid var(--border)", background: "var(--panel)", color: "var(--fg)" }}
           >
             {REBUILD_INTERVAL_CHOICES.map((h) => (
               <option key={h} value={h}>
@@ -130,15 +131,12 @@ export function SettingsModal({
             ))}
           </select>
         </label>
-        <p style={{ color: "#888", fontSize: 12, margin: "6px 0 0" }}>
+        <p style={{ color: "var(--faint)", fontSize: 12, margin: "6px 0 0" }}>
           When on, the extension rebuilds in the background once your homepage is this old, so
           your next tab shows a fresh one (uses your API key).
         </p>
         <div style={{ display: "flex", gap: 12, marginTop: 20, justifyContent: "flex-end" }}>
-          <button
-            onClick={onClose}
-            style={{ ...btn, backgroundColor: "white", color: "#333", border: "1px solid #ddd" }}
-          >
+          <button onClick={onClose} style={btnQuiet}>
             Cancel
           </button>
           <button onClick={() => onSave(draft, normalizeBlockList(blockedDraft.split("\n")))} style={btn}>

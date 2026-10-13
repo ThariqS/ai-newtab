@@ -25,6 +25,8 @@ export const KEYS = {
   rebuildIntervalHours: "autoRebuildIntervalHours",
   /** Throttled mirror of the live build state, for tabs that open while the worker sleeps. */
   buildSnapshot: "buildSnapshot",
+  /** Colour scheme: "system" | "dark" | "light" (see lib/theme.ts). */
+  theme: "theme",
 } as const;
 
 export interface Homepage {
