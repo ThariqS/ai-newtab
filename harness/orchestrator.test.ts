@@ -15,12 +15,16 @@ const COMPONENT = `import React from 'react';\nexport default function Personali
 const bridge: BrowserBridge = {
   getHistory: async () => ({ sites: fixtureHistory(), totalSitesSeen: fixtureHistory().length }),
   getPageHtml: async ({ urls }) => ({
-    pages: urls.map((url) => ({
-      url,
-      finalUrl: url,
-      title: "Hacker News",
-      html: `<h1>Hacker News</h1>\n<a href="https://example.org/story/1">First story</a>\n<p>filler</p>\n<a href="/item?id=2">Second</a>`,
-    })),
+    pages: urls.map((url) =>
+      url.includes("reddit")
+        ? { url, finalUrl: url, title: "homelab", html: `<div class="thing"><a href="/r/homelab/comments/1/x/">A thread</a></div>` }
+        : {
+            url,
+            finalUrl: url,
+            title: "Hacker News",
+            html: `<h1>Hacker News</h1>\n<a href="https://example.org/story/1">First story</a>\n<p>filler</p>\n<a href="/item?id=2">Second</a>`,
+          },
+    ),
     failed: [],
   }),
 };
@@ -32,26 +36,31 @@ describe("runHomepageBuild (local loop)", () => {
       (body) => {
         const digest = JSON.parse(outputsIn(body)[0].output);
         expect(digest.sites).toHaveLength(5);
-        return { output: [call("getPageHtml", { urls: ["https://news.ycombinator.com/"] }, { namespace: "homepage" })] };
+        return { output: [call("getPageHtml", { urls: ["https://news.ycombinator.com/", "https://old.reddit.com/r/homelab/"] }, { namespace: "homepage" })] };
       },
       (body) => {
         const pages = JSON.parse(outputsIn(body)[1].output);
         expect(pages.pages[0].mountPath).toBe("/mnt/session/uploads/pages/news_ycombinator_com_0.html");
+        expect(pages.pages[1].mountPath).toBe("/mnt/session/uploads/pages/old_reddit_com_1.html");
         return {
           output: [
             call("homepage.grep", { pattern: "href=", path: pages.pages[0].mountPath }),
             call("read", { path: pages.pages[0].mountPath, limit: 2 }),
             call("glob", { pattern: "*.html" }),
+            call("grep", { pattern: "href=", path: pages.pages[1].mountPath }),
           ],
         };
       },
       (body) => {
-        const [grep, read, glob] = outputsIn(body).slice(-3).map((o) => o.output);
+        const [grep, read, glob, redditGrep] = outputsIn(body).slice(-4).map((o) => o.output);
         expect(grep).toContain(":2:");
         expect(grep).toContain("example.org/story/1");
         expect(read).toMatch(/^1\t<h1>Hacker News<\/h1>\n2\t/);
         expect(read).toContain("[showing lines 1-2 of 4");
-        expect(glob).toBe("/mnt/session/uploads/pages/news_ycombinator_com_0.html");
+        expect(glob).toBe("/mnt/session/uploads/pages/news_ycombinator_com_0.html\n/mnt/session/uploads/pages/old_reddit_com_1.html");
+        // Links read through old.reddit.com are absolutized and point the reader at www.
+        expect(redditGrep).toContain('href="https://www.reddit.com/r/homelab/comments/1/x/"');
+        expect(redditGrep).not.toContain("old.reddit.com");
         return { output: [call("write", { path: OUTPUT_PATH, content: COMPONENT })] };
       },
       (body) => {
@@ -99,8 +108,8 @@ describe("runHomepageBuild (local loop)", () => {
     const last = api.requests.at(-1);
     expect(last.input[0].role).toBe("user");
     expect(last.input.filter((i: any) => i.type === "reasoning")).toHaveLength(1);
-    expect(last.input.filter((i: any) => i.type === "function_call")).toHaveLength(6);
-    expect(last.input.filter((i: any) => i.type === "function_call_output")).toHaveLength(6);
+    expect(last.input.filter((i: any) => i.type === "function_call")).toHaveLength(7);
+    expect(last.input.filter((i: any) => i.type === "function_call_output")).toHaveLength(7);
   });
 
   test("resumes from a checkpoint and re-answers the orphaned tool call", async () => {

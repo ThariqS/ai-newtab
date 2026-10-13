@@ -46,7 +46,7 @@ Tool arguments are JSON objects matching each tool's schema. Call several indepe
 - One functional component named PersonalizedHomepage, \`export default\`.
 - \`import React from 'react'\` at the top. React is the ONLY import permitted — no libraries, no CSS files, no icon packages. It is rendered standalone, in a sandbox, without a build step beyond TSX → JS.
 - Styling lives inside the component: inline styles / style objects, plus one \`<style>\` element rendered by the component for the rules inline styles cannot express (media queries, hover, prefers-color-scheme, font stacks). No styled-components, no Tailwind, no external stylesheet. Web fonts (an @import of fonts.googleapis.com inside that \`<style>\`) only when the user's standing instructions name them.
-- Every link must be a real absolute URL taken from the scraped content. Never invent a URL, never leave an \`href="#"\` placeholder.
+- Every link must be a real absolute URL taken from the scraped content. Never invent a URL, never leave an \`href="#"\` placeholder. Reddit links always use www.reddit.com, even when you read the page through old.reddit.com.
 - Responsive (one column under 720px), hover states and transitions where they help.
 - Design tokens, so the host can re-skin the page without rebuilding it: in the \`<style>\` element, declare these custom properties on \`:root\` with your chosen defaults, and take EVERY font and colour from them (inline styles may reference them with var(); never hardcode a font-family or a colour anywhere else):
   \`--paper\` (page background), \`--ink\` (text), \`--ink-muted\` (secondary text), \`--rule\` (hairlines), \`--accent\` (links on hover, kickers, section rules),

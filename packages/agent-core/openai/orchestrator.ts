@@ -1,4 +1,5 @@
 import { buildHistoryDigest, slugifyUrl } from "../history-digest";
+import { normalizeScrapedLinks } from "../links";
 import {
   OpenAIError,
   streamResponse,
@@ -475,7 +476,7 @@ async function runGetPageHtml(args: Record<string, unknown>, ctx: ToolContext): 
   const existing = ctx.sandbox.list().length;
   for (const page of pages) {
     const filename = `${slugifyUrl(page.url)}_${existing + refs.length}.html`;
-    const html = formatHtmlForSandbox(page.html);
+    const html = formatHtmlForSandbox(normalizeScrapedLinks(page.html, page.finalUrl ?? page.url));
     const mountPath = ctx.sandbox.mount(`${UPLOAD_ROOT}/pages/${filename}`, html);
     refs.push({ url: page.url, title: page.title, mountPath, bytes: html.length });
     ctx.emit.log(`mounted ${page.url} -> ${mountPath} (${html.length}b, ${html.split("\n").length} lines)`);

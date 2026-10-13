@@ -1,5 +1,6 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { buildHistoryDigest, slugifyUrl } from "../history-digest";
+import { normalizeScrapedLinks } from "../links";
 import { OUTPUT_PATH, buildKickoffMessage } from "../prompt";
 import { DEFAULT_BLOCKED_SITES, isAllowedUrl, isBlocked, normalizeBlockList } from "../site-filter";
 import { DEFAULTS } from "../schemas";
@@ -319,8 +320,9 @@ async function runGetPageHtml(
   for (const page of pages) {
     try {
       const filename = `${slugifyUrl(page.url)}_${refs.length}.html`;
+      const html = normalizeScrapedLinks(page.html, page.finalUrl ?? page.url);
       const upload = await ctx.client.beta.files.upload({
-        file: new File([page.html], filename, { type: "text/html" }),
+        file: new File([html], filename, { type: "text/html" }),
       });
       await ctx.rememberUpload(upload.id);
 
@@ -338,9 +340,9 @@ async function runGetPageHtml(
         // The API re-roots every mount under /mnt/session/uploads. Report what it
         // resolved, not what we asked for, or the model greps a path that isn't there.
         mountPath: resource.mount_path,
-        bytes: page.html.length,
+        bytes: html.length,
       });
-      ctx.emit.log(`mounted ${page.url} -> ${resource.mount_path} (${page.html.length}b)`);
+      ctx.emit.log(`mounted ${page.url} -> ${resource.mount_path} (${html.length}b)`);
     } catch (err) {
       mountFailures.push({ url: page.url, reason: `mount failed: ${String(err)}` });
     }
