@@ -1,19 +1,21 @@
 import type Anthropic from "@anthropic-ai/sdk";
-import { buildHistoryDigest, slugifyUrl } from "./history-digest";
-import { OUTPUT_PATH, buildKickoffMessage } from "./prompt";
-import { DEFAULT_BLOCKED_SITES, isAllowedUrl, isBlocked, normalizeBlockList } from "./site-filter";
-import { DEFAULTS } from "./schemas";
+import { buildHistoryDigest, slugifyUrl } from "../history-digest";
+import { normalizeScrapedLinks } from "../links";
+import { OUTPUT_PATH, buildKickoffMessage } from "../prompt";
+import { DEFAULT_BLOCKED_SITES, isAllowedUrl, isBlocked, normalizeBlockList } from "../site-filter";
+import { DEFAULTS } from "../schemas";
 import { STORAGE_KEYS, ensureAgent, ensureEnvironment, type HomepageModel } from "./setup";
 import type {
   BrowserBridge,
+  CommonRunOptions,
   GetHistoryResult,
   GetPageHtmlResult,
   HomepageBuildResult,
-  KVStore,
   PageRef,
-  RunCallbacks,
   RunPhase,
-} from "./types";
+} from "../types";
+
+export { STORAGE_KEYS } from "./setup";
 
 type SessionEvent = Anthropic.Beta.Sessions.BetaManagedAgentsSessionEvent;
 type CustomToolUse = Anthropic.Beta.Sessions.BetaManagedAgentsAgentCustomToolUseEvent;
@@ -30,26 +32,16 @@ const MANAGED_AGENTS_BETA = "managed-agents-2026-04-01";
 /** Files mount under this root no matter what path you ask for. Ask for it directly. */
 const UPLOAD_ROOT = "/mnt/session/uploads";
 
-export interface RunOptions {
+export interface ClaudeRunOptions extends CommonRunOptions {
+  engine: "claude";
   client: Anthropic;
-  bridge: BrowserBridge;
-  store: KVStore;
-  userSystemPrompt?: string;
-  /**
-   * Hosts the tools must never read. A getter is re-read before every tool call,
-   * so a list saved mid-build applies to the rest of that build.
-   */
-  blockedSites?: string[] | (() => Promise<string[]>);
   /** Ignored when resuming: the session keeps the agent (and model) it started with. */
   model?: HomepageModel;
-  callbacks?: RunCallbacks;
-  signal?: AbortSignal;
   /** Reattach to an existing session instead of creating one (e.g. after the host was killed mid-run). */
   resumeSessionId?: string;
-  now?: Date;
 }
 
-export async function runHomepageBuild(opts: RunOptions): Promise<HomepageBuildResult> {
+export async function runHomepageBuild(opts: ClaudeRunOptions): Promise<HomepageBuildResult> {
   const { client, bridge, store, callbacks, signal } = opts;
   const emit: Emit = {
     phase: (p, d) => callbacks?.onPhase?.(p, d),
@@ -241,7 +233,7 @@ export async function runHomepageBuild(opts: RunOptions): Promise<HomepageBuildR
     emit.phase("writing");
     const code = await collectDeliverable(client, sessionId, finalMessage, emit);
     emit.phase("done");
-    return { code: code.code, sessionId, source: code.source };
+    return { code: code.code, engine: "claude", id: sessionId, source: code.source };
   } finally {
     // Privacy: the event log holds every domain, title and page body we sent,
     // and uploads persist independently of the session. Delete both, always.
@@ -328,8 +320,9 @@ async function runGetPageHtml(
   for (const page of pages) {
     try {
       const filename = `${slugifyUrl(page.url)}_${refs.length}.html`;
+      const html = normalizeScrapedLinks(page.html, page.finalUrl ?? page.url);
       const upload = await ctx.client.beta.files.upload({
-        file: new File([page.html], filename, { type: "text/html" }),
+        file: new File([html], filename, { type: "text/html" }),
       });
       await ctx.rememberUpload(upload.id);
 
@@ -347,9 +340,9 @@ async function runGetPageHtml(
         // The API re-roots every mount under /mnt/session/uploads. Report what it
         // resolved, not what we asked for, or the model greps a path that isn't there.
         mountPath: resource.mount_path,
-        bytes: page.html.length,
+        bytes: html.length,
       });
-      ctx.emit.log(`mounted ${page.url} -> ${resource.mount_path} (${page.html.length}b)`);
+      ctx.emit.log(`mounted ${page.url} -> ${resource.mount_path} (${html.length}b)`);
     } catch (err) {
       mountFailures.push({ url: page.url, reason: `mount failed: ${String(err)}` });
     }
@@ -396,7 +389,7 @@ async function collectDeliverable(
         const text = await response.text();
         if (text.trim()) {
           emit.log(`deliverable from session output: ${file.filename} (${text.length}b)`);
-          return { code: stripFence(text), source: "session-output" };
+          return { code: stripFence(text), source: "output-file" };
         }
       }
     } catch (err) {

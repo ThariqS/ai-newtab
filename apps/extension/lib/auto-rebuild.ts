@@ -17,7 +17,8 @@ export function rebuildIntervalMs(hours?: number | null): number {
 
 export interface AutoRebuildInput {
   enabled: boolean;
-  hasApiKey: boolean;
+  /** Signed in with ChatGPT, with plan usage granted. */
+  hasCredentials: boolean;
   isRunning: boolean;
   /** ISO timestamp of the last successful build, if any. */
   lastBuildTimestamp?: string | null;
@@ -29,16 +30,16 @@ export interface AutoRebuildInput {
 
 /**
  * Conservative by design:
- * - Never fires before the first manual build, so nothing spends on the API
+ * - Never fires before the first manual build, so nothing spends plan usage
  *   before the user has engaged.
  * - Won't retry a failed or cancelled auto-build until another full interval
  *   has passed, so it can't loop. The user can always rebuild by hand.
  */
 export function shouldAutoRebuild(input: AutoRebuildInput): boolean {
-  const { enabled, hasApiKey, isRunning, lastBuildTimestamp, lastAutoAttemptTimestamp, intervalMs, now } =
+  const { enabled, hasCredentials, isRunning, lastBuildTimestamp, lastAutoAttemptTimestamp, intervalMs, now } =
     input;
 
-  if (!enabled || !hasApiKey || isRunning || !lastBuildTimestamp) return false;
+  if (!enabled || !hasCredentials || isRunning || !lastBuildTimestamp) return false;
 
   const age = (iso: string) => now.getTime() - new Date(iso).getTime();
   if (age(lastBuildTimestamp) < intervalMs) return false;

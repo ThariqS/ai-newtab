@@ -6,8 +6,112 @@
   -webkit-text-size-adjust: 100%;
 }
 
+/* ---- Colour tokens ----
+   Light by default. Dark applies when the system prefers it and the user has
+   not forced light (`data-theme="light"`), or when the user forced dark
+   (`data-theme="dark"`). lib/theme.ts sets the attribute on <html>. */
+:root {
+  color-scheme: light;
+  --bg: #ffffff;
+  --fg: #171b23;
+  --muted: #555c69;
+  --faint: #8a92a1;
+  --border: #dde2ea;
+  --panel: #f6f8fb;
+  --overlay: rgba(0, 0, 0, 0.5);
+  --accent: #0066cc;
+  --accent-fg: #ffffff;
+  --accent-wash: #e8f1fc;
+  --success: #1f9d6b;
+  --danger-bg: #fdeceb;
+  --danger-border: #f5c6cb;
+  --danger-fg: #a02620;
+  --danger-strong: #a02620;
+  --log-bg: #0f131b;
+  --log-fg: #8fd4a0;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #15171c;
+    --fg: #e8eaf0;
+    --muted: #a8aeb9;
+    --faint: #7d8491;
+    --border: #2f343d;
+    --panel: #1d2026;
+    --overlay: rgba(0, 0, 0, 0.65);
+    --accent: #4d9ef5;
+    --accent-fg: #0b1220;
+    --accent-wash: #1a2a40;
+    --success: #3cc98c;
+    --danger-bg: #3a1c1c;
+    --danger-border: #6a2b2b;
+    --danger-fg: #ff9b93;
+    --danger-strong: #c0392b;
+    --log-bg: #0b0e13;
+    --log-fg: #8fd4a0;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #15171c;
+  --fg: #e8eaf0;
+  --muted: #a8aeb9;
+  --faint: #7d8491;
+  --border: #2f343d;
+  --panel: #1d2026;
+  --overlay: rgba(0, 0, 0, 0.65);
+  --accent: #4d9ef5;
+  --accent-fg: #0b1220;
+  --accent-wash: #1a2a40;
+  --success: #3cc98c;
+  --danger-bg: #3a1c1c;
+  --danger-border: #6a2b2b;
+  --danger-fg: #ff9b93;
+  --danger-strong: #c0392b;
+  --log-bg: #0b0e13;
+  --log-fg: #8fd4a0;
+}
+
 body {
   margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+}
+a {
+  color: var(--accent);
+}
+
+/* ---- Theme toggle (one icon button, cycles system → dark → light) ---- */
+.theme-toggle {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--fg);
+  cursor: pointer;
+  transition: background 150ms ease-out, border-color 150ms ease-out, color 150ms ease-out, transform 150ms ease-out;
+}
+.theme-toggle:hover {
+  background: var(--accent-wash);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.theme-toggle:active {
+  transform: scale(0.96);
+}
+.theme-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .theme-toggle {
+    transition: none;
+  }
 }
 
 @keyframes hb-pulse {
@@ -22,15 +126,15 @@ body {
 
 /* ---- Assembly-line build screen (Progress component) ---- */
 .build {
-  --b-ink: #171b23;
-  --b-muted: #5c6472;
-  --b-faint: #8a92a1;
-  --b-border: #e2e6ee;
-  --b-surface: #ffffff;
-  --b-panel: #f6f8fb;
-  --b-accent: #0066cc;
-  --b-accent-wash: #e8f1fc;
-  --b-success: #1f9d6b;
+  --b-ink: var(--fg);
+  --b-muted: var(--muted);
+  --b-faint: var(--faint);
+  --b-border: var(--border);
+  --b-surface: var(--bg);
+  --b-panel: var(--panel);
+  --b-accent: var(--accent);
+  --b-accent-wash: var(--accent-wash);
+  --b-success: var(--success);
 
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -219,8 +323,8 @@ body {
 }
 .build-log {
   margin: 0;
-  background: #0f131b;
-  color: #8fd4a0;
+  background: var(--log-bg);
+  color: var(--log-fg);
   border-radius: 12px;
   padding: 14px 16px;
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
