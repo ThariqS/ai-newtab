@@ -97,6 +97,10 @@ failed build until the next interval, so it never loops.
 
 **↻ Rebuild** in the top-right corner rebuilds right away.
 
+**Dark mode.** The icon button next to the buttons cycles **system → dark → light**
+(screen, moon, sun). It restyles the extension's own screens and tells the generated page which
+scheme you forced; pages built from now on honour it, older ones follow the system.
+
 ## Good to know
 
 - **Cost.** Each build is a single agent session billed to your API key. What it
