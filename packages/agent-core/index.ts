@@ -3,6 +3,7 @@ export * from "./schemas";
 export * from "./history-digest";
 export * from "./prompt";
 export * from "./site-filter";
+export * from "./skins";
 export * from "./engine";
 // Claude engine (Managed Agents): agent/environment setup and model choices.
 export {

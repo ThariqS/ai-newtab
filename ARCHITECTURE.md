@@ -119,6 +119,17 @@ the port may vary; `localhost` is refused). An extension cannot listen on a TCP 
 The same helpers power `harness/siwc-login.ts`, which does the flow the way the docs draw
 it: a real `Bun.serve` loopback listener plus the system browser.
 
+### Looks
+
+`packages/agent-core/skins.ts` holds five looks. They work because the component contract
+makes the model declare a fixed set of custom properties on `:root` (`--paper`, `--ink`,
+`--accent`, `--font-masthead`, …), take every font and colour from them, and mark its
+structure with `data-part` attributes (`masthead`, `lead`, `section`, `headline`, …). A look
+is a stylesheet rooted at `html[data-skin="…"]`, which outranks the component's `:root`
+declarations in light, system-dark and forced-dark alike, plus a few rules on parts. The
+preview bootstrap injects it into the sandbox document and swaps it over `postMessage`, so
+changing the look never re-bundles or rebuilds the page.
+
 ### Keeping the worker alive
 
 An MV3 service worker is torn down after ~30s idle, and a build spends most of its

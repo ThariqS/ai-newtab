@@ -124,6 +124,14 @@ failed build until the next interval, so it never loops.
 one click. **Switch account** also forgets the registration, so the next sign-in can
 register another ChatGPT account or workspace.
 
+**Look.** Five looks re-dress the page instantly, without a rebuild: **Metropolitan**
+(blackletter masthead, serif, black on white), **Ledger** (dense financial broadsheet,
+Didone small caps, navy), **Capital** (blackletter over bold sans headlines, strong rules),
+**Nationwide** (bright all-sans, colour-coded sections) and **Boréal** (cream paper, heavy
+old-style serif, deep red). "As the agent built it" keeps the model's own choices. The
+stories stay; only typography, palette and rules change. Pages built before this version
+follow a look from their next build.
+
 **↻ Rebuild** in the top-right corner rebuilds right away.
 
 **Dark mode.** The icon button next to the buttons cycles **system → dark → light**

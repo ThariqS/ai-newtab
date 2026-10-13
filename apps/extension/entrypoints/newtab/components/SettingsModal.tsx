@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ENGINES, MODEL_CHOICES, normalizeBlockList, type EngineId, type HomepageModel } from "@homepage/agent-core";
+import { ENGINES, MODEL_CHOICES, SKINS, findSkin, normalizeBlockList, type EngineId, type HomepageModel, type SkinId } from "@homepage/agent-core";
 import { REBUILD_INTERVAL_CHOICES } from "@/lib/auto-rebuild";
 import type { AuthState } from "@/lib/protocol";
 import type { ModelsState } from "../useHomepageBuild";
@@ -22,6 +22,8 @@ export function SettingsModal({
   onChangeOpenAIModel,
   onForgetKey,
   onSignOut,
+  skin,
+  onChangeSkin,
   autoRebuild,
   onToggleAutoRebuild,
   intervalHours,
@@ -44,6 +46,9 @@ export function SettingsModal({
   /** Remove the current engine's API key (returns to the setup screen). */
   onForgetKey: () => void;
   onSignOut: (opts?: { forget?: boolean }) => void;
+  /** The look applied over the generated page (instant, no rebuild); null = the agent's own. */
+  skin: SkinId | null;
+  onChangeSkin: (next: SkinId | null) => void;
   autoRebuild: boolean;
   onToggleAutoRebuild: (next: boolean) => void;
   intervalHours: number;
@@ -107,6 +112,25 @@ export function SettingsModal({
         <p id="blocked-sites-help" style={{ color: "var(--faint)", fontSize: 12, margin: "6px 0 0" }}>
           One per line. Subdomains are included. Use *.example.com for wildcards.
         </p>
+
+        {/* ---- look ----------------------------------------------------- */}
+        <div style={{ marginTop: 20, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14 }}>
+            Look
+            <select value={skin ?? ""} onChange={(e) => onChangeSkin(findSkin(e.target.value)?.id ?? null)} style={selectStyle}>
+              <option value="">As the agent built it</option>
+              {SKINS.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <p style={{ color: "var(--faint)", fontSize: 12, margin: "6px 0 0" }}>
+            {findSkin(skin)?.description ??
+              "A look re-dresses the page instantly: typography, palette and rules change, the stories stay. Pages built before this version follow it from their next build."}
+          </p>
+        </div>
 
         {/* ---- engine --------------------------------------------------- */}
         <div style={{ marginTop: 20, paddingTop: 16, borderTop: "1px solid var(--border)" }}>
