@@ -90,10 +90,11 @@ addresses (localhost, private IPs, `.local` and `.internal` hosts) are always bl
 
 The new model takes effect from your next build.
 
-**Rebuild automatically.** On by default. Once your homepage is older than the
-interval you pick (6, 12, 24 or 48 hours), the extension rebuilds it quietly in the
-background. It only starts after you've built once by hand, and it won't retry a
-failed build until the next interval, so it never loops.
+**Rebuild automatically each morning.** On by default. The extension builds one
+morning edition a day, quietly in the background, the first time Chrome is open
+between 5am and noon. If Chrome isn't open that morning, the day is skipped. It
+only starts after you've built once by hand, and it tries at most once per
+morning, so it never loops.
 
 **↻ Rebuild** in the top-right corner rebuilds right away.
 

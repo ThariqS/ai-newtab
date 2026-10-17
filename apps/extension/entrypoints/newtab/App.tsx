@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
 import { DEFAULT_MODEL, DEFAULT_BLOCKED_SITES, type HomepageModel } from "@homepage/agent-core";
-import { DEFAULT_REBUILD_INTERVAL_HOURS } from "@/lib/auto-rebuild";
 import { BUILD_STEPS } from "@/lib/protocol";
 import { KEYS, extensionStore, loadHomepage, loadSettings, saveSetting } from "@/lib/storage";
 import { toRenderable } from "@/lib/transpile";
@@ -18,7 +17,6 @@ export default function App() {
   const [blockedSites, setBlockedSites] = useState<string[]>(DEFAULT_BLOCKED_SITES);
   const [model, setModel] = useState<HomepageModel>(DEFAULT_MODEL);
   const [autoRebuild, setAutoRebuild] = useState(true);
-  const [intervalHours, setIntervalHours] = useState(DEFAULT_REBUILD_INTERVAL_HOURS);
   /** Transpiled homepage, ready for Sandpack. */
   const [renderedCode, setRenderedCode] = useState<string | null>(null);
   /** A session left mid-flight, offered as "Resume interrupted build". */
@@ -51,7 +49,6 @@ export default function App() {
         setBlockedSites(settings.blockedSites);
         setModel(settings.model);
         setAutoRebuild(settings.autoRebuild);
-        setIntervalHours(settings.rebuildIntervalHours ?? DEFAULT_REBUILD_INTERVAL_HOURS);
         setResumable(activeSession ?? null);
         if (homepage?.code) setRenderedCode(toRenderable(homepage.code));
       } finally {
@@ -85,10 +82,6 @@ export default function App() {
   const toggleAutoRebuild = useCallback(async (next: boolean) => {
     setAutoRebuild(next);
     await saveSetting("autoRebuild", next);
-  }, []);
-  const changeInterval = useCallback(async (next: number) => {
-    setIntervalHours(next);
-    await saveSetting("rebuildIntervalHours", next);
   }, []);
 
   if (loading) return <div style={{ padding: 20, textAlign: "center" }}>Loading…</div>;
@@ -213,8 +206,6 @@ export default function App() {
           onChangeModel={changeModel}
           autoRebuild={autoRebuild}
           onToggleAutoRebuild={toggleAutoRebuild}
-          intervalHours={intervalHours}
-          onChangeInterval={changeInterval}
           onClose={() => setShowSettings(false)}
           onSave={savePrompt}
         />

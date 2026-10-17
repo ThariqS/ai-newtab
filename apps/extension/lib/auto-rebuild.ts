@@ -1,19 +1,12 @@
 /**
- * Auto-rebuild policy, evaluated by the worker's alarm heartbeat: once the
- * current homepage is older than the chosen interval, rebuild headlessly so the
- * next new tab already shows a fresh one.
+ * Auto-rebuild policy, evaluated by the worker's alarm heartbeat: one morning
+ * edition a day. The first heartbeat inside the morning window rebuilds
+ * headlessly, so the next new tab already shows today's homepage.
  */
 
-/** Interval choices offered in Settings, in hours. */
-export const REBUILD_INTERVAL_CHOICES = [6, 12, 24, 48] as const;
-
-export const DEFAULT_REBUILD_INTERVAL_HOURS = 12;
-
-/** A stored/user value as ms, falling back to the default when unset or invalid. */
-export function rebuildIntervalMs(hours?: number | null): number {
-  const h = typeof hours === "number" && hours > 0 ? hours : DEFAULT_REBUILD_INTERVAL_HOURS;
-  return h * 60 * 60 * 1000;
-}
+/** Local hours (inclusive start, exclusive end) when the morning edition may build. */
+export const MORNING_START_HOUR = 5;
+export const MORNING_END_HOUR = 12;
 
 export interface AutoRebuildInput {
   enabled: boolean;
@@ -23,7 +16,6 @@ export interface AutoRebuildInput {
   lastBuildTimestamp?: string | null;
   /** ISO timestamp of the last auto-build attempt, if any. */
   lastAutoAttemptTimestamp?: string | null;
-  intervalMs: number;
   now: Date;
 }
 
@@ -31,17 +23,24 @@ export interface AutoRebuildInput {
  * Conservative by design:
  * - Never fires before the first manual build, so nothing spends on the API
  *   before the user has engaged.
- * - Won't retry a failed or cancelled auto-build until another full interval
- *   has passed, so it can't loop. The user can always rebuild by hand.
+ * - Only fires in the morning window. A missed morning is skipped, not caught
+ *   up later in the day; the user can always rebuild by hand.
+ * - At most one attempt per morning: a build (manual or automatic) or a failed
+ *   or cancelled attempt since this morning's window opened counts as today's.
  */
 export function shouldAutoRebuild(input: AutoRebuildInput): boolean {
-  const { enabled, hasApiKey, isRunning, lastBuildTimestamp, lastAutoAttemptTimestamp, intervalMs, now } =
-    input;
+  const { enabled, hasApiKey, isRunning, lastBuildTimestamp, lastAutoAttemptTimestamp, now } = input;
 
   if (!enabled || !hasApiKey || isRunning || !lastBuildTimestamp) return false;
 
-  const age = (iso: string) => now.getTime() - new Date(iso).getTime();
-  if (age(lastBuildTimestamp) < intervalMs) return false;
-  if (lastAutoAttemptTimestamp && age(lastAutoAttemptTimestamp) < intervalMs) return false;
+  const hour = now.getHours();
+  if (hour < MORNING_START_HOUR || hour >= MORNING_END_HOUR) return false;
+
+  const morningStart = new Date(now);
+  morningStart.setHours(MORNING_START_HOUR, 0, 0, 0);
+  const sinceMorningStart = (iso: string) => new Date(iso).getTime() >= morningStart.getTime();
+
+  if (sinceMorningStart(lastBuildTimestamp)) return false;
+  if (lastAutoAttemptTimestamp && sinceMorningStart(lastAutoAttemptTimestamp)) return false;
   return true;
 }

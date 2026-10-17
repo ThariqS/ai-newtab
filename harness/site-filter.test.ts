@@ -31,9 +31,10 @@ async function runTools(urls: string[], blockedSites?: string[] | (() => Promise
     { id: "history", type: "agent.custom_tool_use", name: "getHistory", input: { maxResults: 1 } },
     { id: "pages", type: "agent.custom_tool_use", name: "getPageHtml", input: { urls } },
   ];
-  async function* stream() { if (!resume) yield* events; }
+  const idle = { id: "idle", type: "session.status_idle", stop_reason: { type: "end_turn" } };
+  async function* stream() { if (!resume) yield* events; yield idle; }
   const client = { beta: {
-    agents: { retrieve: async () => ({}) },
+    agents: { retrieve: async () => ({}), update: async () => ({}) },
     environments: { retrieve: async () => ({}) },
     sessions: {
       create: async () => ({ id: "session" }),

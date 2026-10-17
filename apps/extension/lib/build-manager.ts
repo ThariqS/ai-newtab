@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { runHomepageBuild, type RunPhase } from "@homepage/agent-core";
-import { rebuildIntervalMs, shouldAutoRebuild } from "./auto-rebuild";
+import { shouldAutoRebuild } from "./auto-rebuild";
 import { browserBridge } from "./browser-bridge";
 import {
   INITIAL_BUILD_STATE,
@@ -120,7 +120,6 @@ export class BuildManager {
         isRunning: this.running,
         lastBuildTimestamp: homepage?.timestamp,
         lastAutoAttemptTimestamp: lastAttempt,
-        intervalMs: rebuildIntervalMs(settings.rebuildIntervalHours),
         now,
       })
     ) {
@@ -128,7 +127,7 @@ export class BuildManager {
     }
 
     // Stamp the attempt before starting so a second wake (or a cancel/failure)
-    // doesn't re-trigger it within the interval.
+    // doesn't re-trigger it this morning.
     await extensionStore.set(KEYS.lastAutoBuildAttempt, now.toISOString());
     void this.startBuild({ resume: false });
   }
@@ -141,25 +140,29 @@ export class BuildManager {
       return; // single-flight: a second start just attaches.
     }
 
-    const { apiKey, systemPrompt, model } = await loadSettings();
-    if (!apiKey) {
-      // Manual builds are gated behind the key-setup screen and auto-builds
-      // require a key, so this only happens if the key was removed.
-      console.warn("[BuildManager] startBuild aborted — no API key in storage");
-      const message = "No Anthropic API key found. Add your key and try again.";
-      this.state = { ...INITIAL_BUILD_STATE, phase: "error", error: message };
-      this.broadcast({ kind: "error", message });
-      return;
-    }
-
+    // Claim the lock before the first await. On wake, tick() fires from several
+    // listeners at once (top level, onStartup, onInstalled, the alarm); if the
+    // lock waited for loadSettings, each of them would start its own session.
     this.running = true;
     this.controller = new AbortController();
-    this.state = { ...INITIAL_BUILD_STATE, running: true, phase: "setup" };
-    this.broadcast({ kind: "snapshot", state: this.state });
-    this.startKeepalive();
-    console.log("[BuildManager] build started", { resume: Boolean(opts.resume) });
 
     try {
+      const { apiKey, systemPrompt, model } = await loadSettings();
+      if (!apiKey) {
+        // Manual builds are gated behind the key-setup screen and auto-builds
+        // require a key, so this only happens if the key was removed.
+        console.warn("[BuildManager] startBuild aborted — no API key in storage");
+        const message = "No Anthropic API key found. Add your key and try again.";
+        this.state = { ...INITIAL_BUILD_STATE, phase: "error", error: message };
+        this.broadcast({ kind: "error", message });
+        return;
+      }
+
+      this.state = { ...INITIAL_BUILD_STATE, running: true, phase: "setup" };
+      this.broadcast({ kind: "snapshot", state: this.state });
+      this.startKeepalive();
+      console.log("[BuildManager] build started", { resume: Boolean(opts.resume) });
+
       // The key is the user's own, read from local storage — there is no server
       // to hide it behind. See ARCHITECTURE.md → Privacy.
       const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });

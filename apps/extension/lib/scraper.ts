@@ -15,6 +15,7 @@ interface ScrapeOptions {
   maxRetries?: number; // Maximum number of retry attempts
   retryDelay?: number; // Initial retry delay in ms
   timeout?: number; // Maximum time to wait for a page in ms
+  extractTimeout?: number; // Maximum time for one content-script extraction in ms
   concurrentTabs?: number; // Number of tabs to process concurrently
 }
 
@@ -23,6 +24,7 @@ const DEFAULT_OPTIONS: Required<ScrapeOptions> = {
   maxRetries: 3,
   retryDelay: 1000, // 1 second initial retry delay
   timeout: 30000, // 30 seconds timeout
+  extractTimeout: 20000, // 20 seconds per extraction attempt
   concurrentTabs: 3, // Process up to 3 tabs at once
 };
 
@@ -92,11 +94,26 @@ async function createScraperWindow(): Promise<number> {
   return win.id;
 }
 
+/** A plain read of the DOM, used when the scrolling extraction doesn't finish. */
+const SNAPSHOT_TIMEOUT_MS = 5000;
+
+class TimeoutError extends Error {}
+
+/** Reject if `promise` hasn't settled within `ms`. */
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new TimeoutError(`${label} timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timeoutId));
+}
+
 async function scrapeUrl(
   url: string,
   windowId: number,
   opts: Required<ScrapeOptions>
 ): Promise<ScrapedPage | null> {
+  let tabId: number | undefined;
   try {
     // Create a new tab in the scraper window
     const tab = await browser.tabs.create({
@@ -104,13 +121,13 @@ async function scrapeUrl(
       active: false,
       windowId,
     });
+    tabId = tab.id!;
 
     // Wait for the tab to load with timeout
-    const loadComplete = await waitForTabLoad(tab.id!, opts.timeout);
+    const loadComplete = await waitForTabLoad(tabId, opts.timeout);
 
     if (!loadComplete) {
       console.error(`Timeout waiting for ${url} to load`);
-      await browser.tabs.remove(tab.id!);
       return null;
     }
 
@@ -125,10 +142,16 @@ async function scrapeUrl(
     while (retryCount <= opts.maxRetries && !result) {
       try {
         // Scrolls to trigger lazy content, then returns { title, html }.
-        const injectionResults = await browser.scripting.executeScript({
-          target: { tabId: tab.id! },
-          files: ["/content-scripts/scraper.js"],
-        });
+        // A page can stall the script indefinitely (throttled timers, a busy
+        // main thread), and nothing else would ever end the build's scrape step.
+        const injectionResults = await withTimeout(
+          browser.scripting.executeScript({
+            target: { tabId },
+            files: ["/content-scripts/scraper.js"],
+          }),
+          opts.extractTimeout,
+          `Extracting ${url}`
+        );
 
         if (
           injectionResults &&
@@ -145,6 +168,8 @@ async function scrapeUrl(
         }
       } catch (error) {
         console.warn(`Attempt ${retryCount + 1} failed for ${url}:`, error);
+        // A page that timed out will time out again; don't spend the budget twice.
+        if (error instanceof TimeoutError) break;
 
         if (retryCount < opts.maxRetries) {
           // Wait before retry with exponential backoff
@@ -156,8 +181,24 @@ async function scrapeUrl(
       retryCount++;
     }
 
-    // Close the tab
-    await browser.tabs.remove(tab.id!);
+    // Fall back to the page as it stands, without the scroll pass, rather than
+    // losing it: on a busy machine a background tab's timers can be throttled
+    // far past the extraction budget.
+    if (!result) {
+      result = await withTimeout(
+        browser.scripting.executeScript({
+          target: { tabId },
+          func: () => ({ url: location.href, title: document.title, html: document.body?.innerHTML ?? "" }),
+        }),
+        SNAPSHOT_TIMEOUT_MS,
+        `Snapshotting ${url}`
+      )
+        .then((injection) => {
+          const snapshot = injection?.[0]?.result as ScraperResult | undefined;
+          return snapshot?.html?.trim() ? snapshot : null;
+        })
+        .catch(() => null);
+    }
 
     if (result) {
       return {
@@ -175,6 +216,9 @@ async function scrapeUrl(
   } catch (error) {
     console.error(`Failed to scrape ${url}:`, error);
     return null;
+  } finally {
+    // Close the tab, even if it already went away.
+    if (tabId !== undefined) await browser.tabs.remove(tabId).catch(() => {});
   }
 }
 
@@ -195,19 +239,23 @@ export async function scrapeUrls(
   const windowId = await createScraperWindow();
 
   try {
-    // Process URLs in batches
-    for (let i = 0; i < urls.length; i += opts.concurrentTabs) {
-      const batch = urls.slice(i, i + opts.concurrentTabs);
-
-      const batchResults = await Promise.all(
-        batch.map(async (url) => ({ url, page: await scrapeUrl(url, windowId, opts) }))
-      );
-
-      for (const { url, page } of batchResults) {
-        if (page) pages.push(page);
-        else failed.push({ url, reason: "failed to load or extract within timeout" });
+    // Keep up to `concurrentTabs` pages loading at once; a slow page holds up
+    // only its own slot, not a whole batch.
+    const results: (ScrapedPage | null)[] = new Array(urls.length).fill(null);
+    let next = 0;
+    const worker = async () => {
+      while (next < urls.length) {
+        const i = next++;
+        results[i] = await scrapeUrl(urls[i], windowId, opts);
       }
-    }
+    };
+    await Promise.all(Array.from({ length: Math.min(opts.concurrentTabs, urls.length) }, worker));
+
+    urls.forEach((url, i) => {
+      const page = results[i];
+      if (page) pages.push(page);
+      else failed.push({ url, reason: "failed to load or extract within timeout" });
+    });
   } finally {
     // Close the scraper window
     try {
@@ -242,5 +290,13 @@ async function waitForTabLoad(
     }, timeout);
 
     browser.tabs.onUpdated.addListener(listener);
+
+    // The tab may have finished loading before the listener was attached.
+    browser.tabs
+      .get(tabId)
+      .then((tab) => {
+        if (tab.status === "complete") listener(tabId, { status: "complete" });
+      })
+      .catch(() => {});
   });
 }

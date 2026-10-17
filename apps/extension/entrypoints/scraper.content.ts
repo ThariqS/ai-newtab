@@ -5,15 +5,23 @@
 export default defineContentScript({
   registration: "runtime",
   main() {
+    // Scrolling only nudges lazy content into view, so it gets a fixed budget.
+    // Timers in a background tab are heavily throttled, and on a long page an
+    // unbounded walk can take minutes.
+    const SCROLL_BUDGET_MS = 5000;
+
     // Function to scroll the page
     const scrollPage = async () => {
+      const deadline = Date.now() + SCROLL_BUDGET_MS;
       const scrollHeight = document.documentElement.scrollHeight;
-      const viewportHeight = window.innerHeight;
+      // A tab that has never been shown can report a zero-height viewport, and a
+      // zero step would never advance.
+      const viewportHeight = window.innerHeight || 800;
       const scrollDistance = viewportHeight * 0.8; // Scroll 80% of viewport height each time
       let currentPosition = 0;
 
       // Scroll down the page in increments
-      while (currentPosition < scrollHeight) {
+      while (currentPosition < scrollHeight && Date.now() < deadline) {
         window.scrollTo(0, currentPosition);
         currentPosition += scrollDistance;
 

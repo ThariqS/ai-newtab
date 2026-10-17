@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { MODEL_CHOICES, normalizeBlockList, type HomepageModel } from "@homepage/agent-core";
-import { REBUILD_INTERVAL_CHOICES } from "@/lib/auto-rebuild";
 import { btn } from "./ui";
 
 export function SettingsModal({
@@ -10,8 +9,6 @@ export function SettingsModal({
   onChangeModel,
   autoRebuild,
   onToggleAutoRebuild,
-  intervalHours,
-  onChangeInterval,
   onClose,
   onSave,
 }: {
@@ -21,8 +18,6 @@ export function SettingsModal({
   onChangeModel: (next: HomepageModel) => void;
   autoRebuild: boolean;
   onToggleAutoRebuild: (next: boolean) => void;
-  intervalHours: number;
-  onChangeInterval: (next: number) => void;
   onClose: () => void;
   onSave: (prompt: string, blockedSites: string[]) => void;
 }) {
@@ -103,36 +98,11 @@ export function SettingsModal({
             checked={autoRebuild}
             onChange={(e) => onToggleAutoRebuild(e.target.checked)}
           />
-          Rebuild automatically
-        </label>
-        <label
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            marginTop: 10,
-            marginLeft: 24,
-            color: autoRebuild ? "#333" : "#aaa",
-            fontSize: 14,
-          }}
-        >
-          Every
-          <select
-            value={intervalHours}
-            disabled={!autoRebuild}
-            onChange={(e) => onChangeInterval(Number(e.target.value))}
-            style={{ padding: "4px 8px", fontSize: 14, borderRadius: 4, border: "1px solid #ddd" }}
-          >
-            {REBUILD_INTERVAL_CHOICES.map((h) => (
-              <option key={h} value={h}>
-                {h === 24 ? "24 hours (daily)" : `${h} hours`}
-              </option>
-            ))}
-          </select>
+          Rebuild automatically each morning
         </label>
         <p style={{ color: "#888", fontSize: 12, margin: "6px 0 0" }}>
-          When on, the extension rebuilds in the background once your homepage is this old, so
-          your next tab shows a fresh one (uses your API key).
+          When on, the extension builds one morning edition a day in the background (first time
+          Chrome is open between 5am and noon), so your next tab shows a fresh one (uses your API key).
         </p>
         <div style={{ display: "flex", gap: 12, marginTop: 20, justifyContent: "flex-end" }}>
           <button
