@@ -138,6 +138,11 @@ arrived in the history fetch.
 
 ## Privacy
 
+Bookmarks are read by `lib/bookmarks.ts` in the browser and shown only in the bookmarks
+panel. The model never receives them: `agent-core` does not import that module, and the
+build prompt contains no bookmark data. The `bookmarks` permission is used for this
+panel alone.
+
 The editable blocked-sites list is enforced in agent-core's tool handlers, not
 just the prompt: blocked domains are excluded from history digests and their
 counts, and blocked or non-HTTP(S) page requests never reach the browser bridge.
