@@ -3,24 +3,45 @@
  * of the system the Bun harness can't reach:
  *
  *   1. the MV3 service worker registers,
- *   2. the new-tab override renders (the API-key screen on a fresh profile),
+ *   2. the new-tab override renders (the engine setup screen on a fresh profile),
  *   3. the worker answers `subscribe` on the build port with a snapshot,
  *   4. `startBuild` with no API key fails cleanly with an error message,
- *   5. `chrome.history` is readable, so the `history` permission is real.
+ *   5. `chrome.history` is readable, so the `history` permission is real,
+ *   6. a ChatGPT usage limit hit mid-build becomes a notice, not an error: it
+ *      survives a worker restart, links to the usage page, its API-key button
+ *      opens the key setup, and dismissing it sticks.
  *
- * No API calls are made. Chrome 136+ ignores `--load-extension`, so the
+ * No API calls are made: step 6 runs against fake ChatGPT credentials in the
+ * throwaway profile, with the worker's `fetch` stubbed to answer the way the
+ * ChatGPT-plan route does when the limit is reached. Chrome 136+ ignores `--load-extension`, so the
  * extension is loaded over CDP's Extensions domain instead.
  *
  * Run: pnpm build && pnpm extension:test
- * Set CHROME_PATH if Chrome isn't at the default macOS location.
+ * Set CHROME_PATH to pick a Chrome. Without it, a Chrome for Testing build left
+ * by Playwright or Puppeteer is preferred over the installed Chrome: headless
+ * sessions of Chrome 156 stable on macOS quit on their own after about 31 s.
  */
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const CHROME =
-  process.env.CHROME_PATH ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+const CHROME = process.env.CHROME_PATH ?? chromeForTesting() ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+
+/** A Chrome for Testing build from the Playwright or Puppeteer cache (macOS layout), if there is one. */
+function chromeForTesting(): string | undefined {
+  const home = process.env.HOME ?? "";
+  const roots = [join(home, "Library/Caches/ms-playwright"), join(home, ".cache/puppeteer/chrome")];
+  const found: string[] = [];
+  for (const root of roots) {
+    if (!existsSync(root)) continue;
+    for (const dir of readdirSync(root)) {
+      const app = join(root, dir, "chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing");
+      if (existsSync(app)) found.push(app);
+    }
+  }
+  return found.sort().at(-1);
+}
 const EXT = join(import.meta.dir, "../apps/extension/.output/chrome-mv3");
 const PORT = 9333;
 
@@ -151,8 +172,8 @@ try {
   await sleep(2500); // let React mount
   const bodyText = await page.evaluate<string>("document.body.innerText");
   check(
-    "renders the API-key setup screen",
-    /Connect your Anthropic API key/i.test(bodyText),
+    "renders the setup screen with the Claude engine selected",
+    /Choose who writes your homepage/i.test(bodyText) && /Connect your Anthropic API key/i.test(bodyText),
     bodyText.split("\n").filter(Boolean)[0]?.slice(0, 50),
   );
 
@@ -181,6 +202,12 @@ try {
   const started = await talk({ kind: "startBuild" }, 3000);
   const error = started.find((m) => m.kind === "error");
   check("startBuild with no API key reports an error", /API key/i.test(error?.message ?? ""), error?.message);
+  const authMsg = subscribed.find((m) => m.kind === "auth");
+  check(
+    "subscribe also reports the credential state",
+    Boolean(authMsg) && authMsg.state.engine === "claude" && authMsg.state.ready === false,
+    JSON.stringify(authMsg?.state),
+  );
 
   // ---- 5. chrome.history is readable ---------------------------------------
   const domains = await page.evaluate<string[]>(`
@@ -201,6 +228,129 @@ try {
     "chrome.history is readable (seeded domains returned)",
     domains.includes("news.ycombinator.com"),
     domains.join(", "),
+  );
+
+  // ---- 6. usage limit → notice, not error ----------------------------------
+  const settle = async (ms = 2500) => {
+    await sleep(ms);
+    return page.evaluate<string>("document.body.innerText");
+  };
+  const reload = async () => {
+    await page.send("Page.reload", {});
+    return settle(3000);
+  };
+
+  // Fake sign-in in the throwaway profile: a token that won't need a refresh,
+  // with the plan-usage scope, so the OpenAI engine counts as ready.
+  await page.evaluate(`
+    chrome.storage.local.set({
+      engine: "openai",
+      openaiAuthMode: "siwc",
+      siwcCredentials: {
+        email: "tester@example.com",
+        issuer: "https://auth.openai.com",
+        subject: "user-test",
+        clientId: "oaiapp_test",
+        hostId: "urn:uuid:00000000-0000-4000-8000-000000000000",
+        idToken: null,
+        accessToken: "fake-access-token",
+        refreshToken: null,
+        tokenType: "Bearer",
+        expiresAt: new Date(Date.now() + 86400000).toISOString(),
+        scopes: ["openid", "offline_access", "chatgpt.tokens.use.direct"],
+        savedAt: new Date().toISOString(),
+      },
+    })
+  `);
+
+  // The worker answers /v1/responses the way the ChatGPT-plan route did for a
+  // real user: HTTP 200, then a mid-stream `error` event with nested details.
+  const swTargets: any[] = await getJson("/json/list");
+  const swTarget = swTargets.find((t) => t.type === "service_worker" && t.url.includes(extId));
+  const worker = await cdp(swTarget.webSocketDebuggerUrl);
+  const patched = await worker.evaluate<string>(`
+    (() => {
+      globalThis.__realFetch ??= globalThis.fetch;
+      globalThis.__responsesCalls = 0;
+      globalThis.fetch = async (input, init) => {
+        const url = typeof input === "string" ? input : input.url;
+        if (url.startsWith("https://api.openai.com/v1/responses")) {
+          globalThis.__responsesCalls++;
+          const created = { type: "response.created", response: { id: "resp_test", status: "in_progress", output: [] } };
+          const error = {
+            type: "error",
+            error: {
+              type: "invalid_request_error",
+              code: "subscription_sharing_usage_limit_exceeded",
+              message: "The ChatGPT user has reached their Subscription Sharing usage limit.",
+              param: null,
+            },
+            sequence_number: 3,
+          };
+          const body = "event: response.created\\ndata: " + JSON.stringify(created) + "\\n\\nevent: error\\ndata: " + JSON.stringify(error) + "\\n\\n";
+          return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+        }
+        return globalThis.__realFetch(input, init);
+      };
+      return "patched";
+    })()
+  `);
+
+  const limited = await talk({ kind: "startBuild" }, 5000);
+  const notice = limited.find((m) => m.kind === "notice");
+  const calls = await worker.evaluate<number>("globalThis.__responsesCalls");
+  check(
+    "a usage limit mid-build ends the build with a notice, not an error, and is not retried",
+    patched === "patched" && notice?.notice?.kind === "usage-limit" && !limited.some((m) => m.kind === "error") && calls === 1,
+    JSON.stringify({ notice: notice?.notice?.kind, error: limited.find((m) => m.kind === "error")?.message, calls }),
+  );
+  worker.close();
+
+  // The worker is unloaded long before anyone looks; the notice must survive that.
+  await page.send("ServiceWorker.enable");
+  await page.send("ServiceWorker.stopAllWorkers");
+  await sleep(500);
+  let text = await reload();
+  // Proof the worker really restarted: the stub lived on the old instance's global.
+  const freshTargets: any[] = await getJson("/json/list");
+  const freshTarget = freshTargets.find((t) => t.type === "service_worker" && t.url.includes(extId));
+  const freshWorker = freshTarget ? await cdp(freshTarget.webSocketDebuggerUrl) : null;
+  const stubGone = (await freshWorker?.evaluate<string>("typeof globalThis.__responsesCalls")) === "undefined";
+  freshWorker?.close();
+  const usageHref = await page.evaluate<string | null>(
+    `document.querySelector('[data-testid="usage-link"]')?.getAttribute("href") ?? null`,
+  );
+  check(
+    "after a worker restart the page shows the usage-limit notice instead of an error",
+    stubGone && /ChatGPT usage limit reached/.test(text) && !/Build failed/i.test(text),
+    `fresh worker=${stubGone}; ${text.split("\n").filter((l) => /usage limit/i.test(l))[0]?.slice(0, 60)}`,
+  );
+  const shot = await page.send("Page.captureScreenshot", { format: "png" });
+  if (shot.result?.data) {
+    mkdirSync(join(import.meta.dir, "out"), { recursive: true });
+    writeFileSync(join(import.meta.dir, "out", "usage-limit-panel.png"), Buffer.from(shot.result.data, "base64"));
+  }
+  check("the notice links to the ChatGPT usage page", usageHref === "https://chatgpt.com/settings/usage", usageHref ?? "no link");
+
+  await page.evaluate(`document.querySelector('[data-testid="use-api-key"]').click()`);
+  text = await settle();
+  const mode = await page.evaluate<string>(`chrome.storage.local.get("openaiAuthMode").then((r) => r.openaiAuthMode)`);
+  check(
+    "'Use an OpenAI API key' switches to API-key billing and opens the key setup",
+    mode === "apiKey" && /Connect your OpenAI API key/.test(text),
+    `mode=${mode}`,
+  );
+
+  // Back on the ChatGPT plan, the notice is still there until dismissed; dismissing sticks.
+  await page.evaluate(`chrome.storage.local.set({ openaiAuthMode: "siwc" })`);
+  text = await reload();
+  const before = /ChatGPT usage limit reached/.test(text);
+  const dismissed = await talk({ kind: "dismissNotice" }, 800);
+  text = await reload();
+  check(
+    "dismissing the notice clears it for good",
+    before && dismissed.some((m) => m.kind === "snapshot" && m.state.notice === null) && !/ChatGPT usage limit reached/.test(text),
+    `before=${before}`,
   );
 
   page.close();

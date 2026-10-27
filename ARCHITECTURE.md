@@ -1,20 +1,33 @@
 # Architecture
 
-There is no server. Three parties are involved, and you run one of them.
+There is no server. The parties involved depend on the engine, and you run the
+extension either way.
 
 | | Runs where | Does what |
 |---|---|---|
-| **Extension** (service worker) | Your browser | Hosts the build: holds the SSE stream, executes `getHistory` / `getPageHtml`, uploads page HTML, persists the homepage |
+| **Extension** (service worker) | Your browser | Hosts the build: runs the chosen engine, executes `getHistory` / `getPageHtml`, persists the homepage, holds every credential |
 | **Extension** (new-tab page(s)) | Your browser | Thin view: subscribes to the worker over a port, renders live progress and the finished homepage |
-| **Orchestration layer** | Anthropic | Runs the agent loop, persists the session event log, emits `agent.custom_tool_use` |
-| **Session sandbox** | Anthropic | Runs `read` / `grep` / `glob` / `write` over the mounted pages |
+| **Claude engine** — orchestration layer | Anthropic | Runs the agent loop, persists the session event log, emits `agent.custom_tool_use` |
+| **Claude engine** — session sandbox | Anthropic | Runs `read` / `grep` / `glob` / `write` over the mounted pages |
+| **OpenAI engine** — Responses API | OpenAI | Runs the model, one stateless request per turn (`store: false`); the loop and the sandbox run in the worker |
 
-The agent loop runs **in the service worker** (`apps/extension/lib/build-manager.ts`), so a build
+The build is hosted **in the service worker** (`apps/extension/lib/build-manager.ts`), so it
 survives closing the tab, shows up in every open tab, and can run headless on a
-`chrome.alarms` schedule. The two custom tools execute in the extension too, because they
-need `chrome.history` and `chrome.tabs`. Anthropic never executes them — it emits an event
-and waits for a `user.custom_tool_result` on the same authenticated stream. There is no
-inbound connection and no public endpoint.
+`chrome.alarms` schedule. The two browser tools execute in the extension with either
+engine, because they need `chrome.history` and `chrome.tabs`. There is no inbound
+connection and no public endpoint.
+
+## Engines
+
+`packages/agent-core/engine.ts` is the switch: `runHomepageBuild(opts)` dispatches on
+`opts.engine`. Both engines share the browser bridge, the KV store, the history digest,
+the site filter, the tool schemas, the editorial instructions and the result shape.
+
+### Claude (`agent-core/claude/`)
+
+The worker drives a Claude Managed Agents session. Anthropic never executes the browser
+tools — it emits an event and waits for a `user.custom_tool_result` on the same
+authenticated stream. The sandbox tools run in the session's sandbox.
 
 ```
 service worker        Anthropic loop        sandbox
@@ -37,6 +50,75 @@ service worker        Anthropic loop        sandbox
     └─ sessions.delete ────▶│                  │
 ```
 
+### OpenAI (`agent-core/openai/`)
+
+The worker runs the agent loop itself: one streamed `POST /v1/responses` per turn with
+the whole transcript in `input`, every tool executed locally, and a checkpoint of the
+transcript plus the in-memory sandbox written to the KV store after each step. The
+bearer token is either a Sign in with ChatGPT access token (the user's ChatGPT plan)
+or an API key; the loop only ever sees a `TokenProvider`.
+
+```
+service worker                       OpenAI /v1/responses
+    │                                        │
+    ├─ POST (instructions, input, tools) ───▶│  store:false, stream:true
+    │◀─ SSE … function_call getHistory ──────┤
+    ├─ chrome.history → digest               │
+    ├─ POST (input + function_call_output) ─▶│
+    │◀─ SSE … function_call getPageHtml ─────┤
+    ├─ tabs + scripting → sanitize → mount in Sandbox (/mnt/session/uploads/pages/*.html)
+    ├─ POST (…) ────────────────────────────▶│
+    │◀─ SSE … function_call grep / read ─────┤
+    ├─ Sandbox.grep / read                   │
+    ├─ POST (…) ────────────────────────────▶│
+    │◀─ SSE … function_call write ───────────┤
+    ├─ Sandbox.write(/mnt/session/outputs/homepage.tsx)
+    ├─ POST (…) ────────────────────────────▶│
+    │◀─ SSE … message, response.completed ───┤  (no tool calls → loop ends)
+    └─ read deliverable from Sandbox, drop checkpoint
+```
+
+What the ChatGPT-plan route requires of each request, enforced in `openai/client.ts` and
+`openai/orchestrator.ts` and covered by `harness/orchestrator.test.ts`: `store: false`,
+`stream: true`, `input` as an array carrying the whole transcript (never
+`previous_response_id`), instructions in `instructions` (no `system` message), none of the
+unsupported fields (`temperature`, `max_output_tokens`, `background`, …). Tools are
+delivered as one `type: "namespace"` tool wrapping the six function tools; if the route
+answers 400 for that shape the orchestrator falls back to an `additional_tools` developer
+item, then to flat function tools, and remembers what worked (`apiCompat`). The same
+mechanism drops `include: ["reasoning.encrypted_content"]` or the `reasoning` parameter if
+either is rejected. `response.failed` is handled mid-stream: the
+`subscription_sharing_*` codes become readable errors.
+
+#### Sign in with ChatGPT in an extension
+
+The OSS flow (`developers.openai.com/siwc/token-sharing-open-source`) is a public OAuth
+client with PKCE whose callback **must** be `http://127.0.0.1:<port>/auth/callback` (only
+the port may vary; `localhost` is refused). An extension cannot listen on a TCP port, so
+`apps/extension/lib/siwc-auth.ts` does this instead:
+
+1. `beginSignIn()` persists the attempt (state, nonce, PKCE verifier, the exact redirect
+   URI with a random dynamic port) in `chrome.storage.session`, then opens the
+   authorization URL in a tab. First sign-in: `client_id=dynamic_agent_client` with
+   `agent_name_hint` and a stable `ext_agent_host_id` (`urn:uuid:…`, generated once per
+   install). Later sign-ins: the issued `oaiapp_…` client ID with `id_token_hint`.
+2. `background.ts` registers `webNavigation.onBeforeNavigate` / `onCommitted` /
+   `onErrorOccurred` (and `tabs.onUpdated` as a fallback) at the top level, filtered to
+   `127.0.0.1` + `/auth/callback`. These fire even if the worker was unloaded while the
+   user sat on the consent screen.
+3. `handleCallbackNavigation()` claims the pending attempt, validates `state`, takes the
+   `code` (and the issued `client_id` on registration), exchanges it at the token endpoint
+   with the verifier, validates the ID token claims (issuer, audience, nonce, expiry), and
+   saves the credential record. The auth tab is closed and the originating new tab refocused.
+4. `createTokenProvider()` (`openai/siwc.ts`) hands the orchestrator an access token,
+   refreshing it five minutes before expiry with the rotating refresh token, serialized so
+   two refreshes never race. A 401 mid-build forces one refresh and retries the turn. An
+   unusable refresh token clears the tokens (not the registration) and the UI drops back to
+   the setup screen.
+
+The same helpers power `harness/siwc-login.ts`, which does the flow the way the docs draw
+it: a real `Bun.serve` loopback listener plus the system browser.
+
 ### Keeping the worker alive
 
 An MV3 service worker is torn down after ~30s idle, and a build spends most of its
@@ -45,65 +127,88 @@ wall clock waiting on the model. Three things keep it alive or bring it back:
 - **During a turn**, the in-flight session fetch plus a 20s self-ping
   (`runtime.getPlatformInfo`) reset the idle timer.
 - **A 1-minute alarm heartbeat** calls `BuildManager.tick()`. If an
-  `activeSessionId` is in storage, the worker reattaches: the orchestrator replays
-  the session's event log, re-answers any tool call left hanging, and finishes.
+  `activeSessionId` (Claude) or an `activeBuild` checkpoint (OpenAI) is in storage, the
+  worker reattaches: the Claude orchestrator replays the session's event log, the OpenAI
+  one reloads the transcript and the sandbox; both re-answer any tool call left hanging,
+  and finish.
 - **The same heartbeat** drives scheduled rebuilds (`lib/auto-rebuild.ts`), so the
   first new tab of the day already shows a fresh homepage.
 
 ### Tabs are views
 
 Each new tab connects on a port (`lib/protocol.ts`), receives a snapshot of the
-build state, then streams phase/text/log deltas. Every open tab shows the same live
-run. A throttled snapshot is also mirrored to storage so a tab opened while the
-worker is asleep paints instantly.
+build state and the credential state, then streams phase/text/log deltas. Every open
+tab shows the same live run. Keys and tokens never cross the port: the page saves a key
+to storage and asks the worker to re-evaluate, or asks it to sign in, sign out or list
+models, and gets back only what it needs to render. A throttled snapshot is also
+mirrored to storage so a tab opened while the worker is asleep paints instantly.
 
 The finished component renders inside a Sandpack iframe
 (`entrypoints/newtab/components/HomepagePreview.tsx`): it is model-written code, so
-it runs sandboxed, not in the extension's own page.
+it runs sandboxed, not in the extension's own page. That iframe has no
+`allow-top-navigation`, so a plain click on a link is handed to the parent page over
+`postMessage` and the page navigates itself; modified clicks open a new tab through a
+`<base target="_blank">`.
 
 ## Layout
 
 ```
-packages/agent-core/      host-agnostic agent loop — imports no chrome.*, browser.*, or node:*
-  orchestrator.ts         runHomepageBuild: session lifecycle, event loop, tool dispatch, cleanup
-  setup.ts                ensureAgent / ensureEnvironment (created once, cached by ID)
-  prompt.ts               system prompt + per-build kickoff message
-  schemas.ts              custom tool input schemas and defaults
-  history-digest.ts       narrows raw history to fit a tool result
-  types.ts                BrowserBridge, KVStore, RunPhase, …
+packages/agent-core/      host-agnostic — imports no chrome.*, browser.*, or node:*
+  engine.ts               runHomepageBuild: dispatch on the engine; merged storage keys
+  claude/
+    orchestrator.ts       the Managed Agents session: lifecycle, event loop, tool dispatch, cleanup
+    setup.ts              ensureAgent / ensureEnvironment (created once, cached by ID), model choices
+  openai/
+    orchestrator.ts       the local agent loop over Responses: tool dispatch, checkpoint, fallbacks
+    client.ts             Responses client over fetch + SSE, model listing, SIWC error codes
+    siwc.ts               OAuth: authorize URL, PKCE, callback parsing, code exchange, refresh, token provider
+    sandbox.ts            in-memory files: mount (re-flowed HTML), grep, read, glob, write (outputs only)
+    tools.ts              the six function tools and how they are delivered (namespace / additional_tools / flat)
+  prompt.ts               instructions + per-build kickoff message (shared)
+  schemas.ts              tool input schemas and defaults (shared)
+  history-digest.ts       narrows raw history to fit a tool result; subreddit-level site keys
+  site-filter.ts          the editable block list and the always-on private-host rules
+  types.ts                BrowserBridge, KVStore, RunPhase, CommonRunOptions, …
 
 apps/extension/           MV3 extension (WXT + React)
   entrypoints/
-    background.ts         service worker: hosts BuildManager, alarm heartbeat
+    background.ts         service worker: hosts BuildManager, alarm heartbeat, OAuth callback listeners
     scraper.content.ts    injected into scraped tabs: scroll, return HTML
     newtab/               the new-tab UI (thin client onto the worker)
   lib/
-    build-manager.ts      single-flight build host, broadcast, keepalive, reattach
+    build-manager.ts      single-flight build host, engine switch, broadcast, keepalive, resume, credentials front door
+    openai-auth.ts        the OpenAI engine's credentials: ChatGPT plan (siwc-auth) or API key
+    siwc-auth.ts          the extension side of Sign in with ChatGPT (storage, tab, callback capture)
     browser-bridge.ts     BrowserBridge over chrome.history / chrome.tabs
-    history.ts            getHistory: group and rank chrome.history by domain
+    history.ts            getHistory: group and rank chrome.history by site
     scraper.ts            getPageHtml: load URLs in a background window, sanitize HTML
-    protocol.ts           page ↔ worker messages and the five UI build steps
+    protocol.ts           page ↔ worker messages, credential state, the five UI build steps
     auto-rebuild.ts       when to rebuild on a schedule
-    storage.ts            every chrome.storage key, settings, saved homepage
+    storage.ts            every chrome.storage key, settings, saved homepage, model catalog
     transpile.ts          TSX → JS for the preview
 
 harness/                  Bun scripts: drive agent-core with a fixture/fetch bridge, test the extension
+  siwc-login.ts           sign in with ChatGPT from the terminal with a real loopback listener
+  fake-openai.ts          scripted stand-in for /responses, /models and the token endpoint, for tests
 ```
 
 ## Verification
 
 | Command | Proves |
 |---|---|
-| `pnpm test` | The history digest is capped, ranked, drops `urls[]`, reports `totalSitesSeen` |
-| `pnpm agent:run` | Full build against the real API: tools, mounting, sandbox grep/read, deliverable, cleanup |
+| `pnpm test` | The history digest is capped, ranked, drops `urls[]`, reports `totalSitesSeen`; the site filter through both engines' tool dispatch; the OpenAI loop against a scripted fake API (tool dispatch, sandbox grep/read/glob/write, checkpoint + resume with an orphaned call, 401 → refresh → retry, 400 → tool-delivery fallback, mid-stream `response.failed`); the SIWC request/callback/token contract |
+| `pnpm agent:login` | A real Sign in with ChatGPT: registration, PKCE, code exchange, granted scopes |
+| `pnpm agent:models` | `GET /models` with the OpenAI credentials: what they offer |
+| `pnpm agent:run` | Full build against the real API with either engine: tools, sandbox, deliverable, cleanup |
 | `pnpm agent:verify` | The deliverable transforms, evaluates and server-renders |
-| `pnpm agent:resume-test` | A build killed with a tool call pending can be reattached and finished |
-| `pnpm agent:retention <sessionId>` | The session and every uploaded page body are actually deleted |
-| `pnpm extension:test` | In headless Chrome: worker registers, new tab renders, port protocol answers, `chrome.history` reads |
+| `pnpm agent:resume-test` | (Claude) A build killed with a tool call pending can be reattached and finished |
+| `pnpm agent:retention <sessionId>` | (Claude) The session and every uploaded page body are actually deleted |
+| `pnpm extension:test` | In headless Chrome: worker registers, new tab renders the setup screen, port protocol answers (snapshot + credential state), `chrome.history` reads |
 
-The `agent:*` commands need `ANTHROPIC_API_KEY` in `.env` and spend API credits. The
-harness's bridge uses fixture history and a plain `fetch`, so it can't see
-logged-in pages — that's the whole reason `getPageHtml` runs in your browser.
+The `agent:*` commands need credentials in `.env` (or a `pnpm agent:login`) and spend
+API credits or plan usage. The harness's bridge uses fixture history and a plain
+`fetch`, so it can't see logged-in pages — that's the whole reason `getPageHtml` runs
+in your browser.
 
 ## Gotchas worth knowing
 
@@ -136,6 +241,23 @@ arrived in the history fetch.
 
 **`files.upload()` takes no `purpose`.** Just `{ file }`.
 
+**OpenAI: only the issued `client_id` works for token exchange.** `dynamic_agent_client` is
+the registration entrypoint; the callback's `client_id` (`oaiapp_…`) is what you save and
+send to the token endpoint and on every later sign-in. The redirect URI must match byte
+for byte between the authorization request and the code exchange, port included.
+
+**OpenAI: don't read output items only off `response.completed`.** A proxying route can
+send a slim response object there; the client rebuilds items from `output_item.done`
+events and uses the completed object as a cross-check.
+
+**OpenAI: reasoning items without `encrypted_content` cannot be replayed.** With
+`store: false` the transcript is resent each turn; a bare reasoning item is dropped rather
+than echoed. And every `function_call` must get a `function_call_output`: a tool failure
+becomes `{"error": "…"}`, never a skipped item.
+
+**Refresh tokens rotate.** Use the latest one, store it together with the new access
+token, and serialize refreshes (`createTokenProvider` does).
+
 ## Privacy
 
 The editable blocked-sites list is enforced in agent-core's tool handlers, not
@@ -152,11 +274,20 @@ connect to a public address; behind a proxy at a private address, or when Chrome
 reports no address, the name check is all there is. History digests still list
 such a domain. Subresource loads are not intercepted.
 
-The session event log persists every domain, title and scraped page body server-side
-until deleted, and uploaded files persist independently. `runHomepageBuild` deletes
-both in a `finally`. Confirm retention/ZDR eligibility against current docs before
-distributing this.
+With the Claude engine, the session event log persists every domain, title and scraped
+page body server-side until deleted, and uploaded files persist independently. The
+orchestrator deletes both in a `finally`. Confirm retention/ZDR eligibility against
+current docs before distributing this.
 
-The API key lives in `chrome.storage.local`, readable by anyone with access to the
-browser profile. Fine for a tool you run yourself; **do not ship this to the Web Store**
-without moving the key behind a proxy.
+With the OpenAI engine, what leaves the machine is the history digest, the tool results
+the model asks for (grep matches and read ranges, not whole pages unless the model reads
+them whole), and the model's own output, all inside Responses requests sent with
+`store: false`. Nothing is uploaded as a file and no conversation is stored by the API
+between turns; the only copy of a build in progress is the checkpoint in
+`chrome.storage.local`, deleted when the build ends. OpenAI's own retention and
+abuse-monitoring policies still apply to requests in flight.
+
+The API keys and ChatGPT tokens live in `chrome.storage.local`, readable by anyone with
+access to the browser profile. Fine for a tool you run yourself; **do not ship this to
+the Web Store** without moving the credentials behind a proxy — and ChatGPT plan usage
+is only offered to open-source, locally run apps in any case.

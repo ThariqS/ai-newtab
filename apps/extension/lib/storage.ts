@@ -1,24 +1,37 @@
 import {
+  DEFAULT_ENGINE,
   DEFAULT_MODEL,
   DEFAULT_BLOCKED_SITES,
   MODEL_CHOICES,
   STORAGE_KEYS as AGENT_KEYS,
+  type EngineId,
   type HomepageModel,
   type KVStore,
+  type ModelInfo,
 } from "@homepage/agent-core";
 
 /**
  * Everything the extension persists, in one place. All of it lives in
- * chrome.storage.local — including the API key, which anyone with access to the
- * browser profile can read. Fine for a tool you run yourself; not for one you
- * distribute (see ARCHITECTURE.md → Privacy).
+ * chrome.storage.local — including the API keys and the ChatGPT tokens, which
+ * anyone with access to the browser profile can read. Fine for a tool you run
+ * yourself; not for one you distribute (see ARCHITECTURE.md → Privacy).
  */
 export const KEYS = {
   ...AGENT_KEYS,
   homepage: "homepageData",
   systemPrompt: "systemPrompt",
   blockedSites: "blockedSites",
+  /** Which engine builds: "claude" (default) or "openai". */
+  engine: "engine",
+  /** Claude model (see MODEL_CHOICES). */
   model: "model",
+  /** OpenAI: "siwc" (ChatGPT plan) or "apiKey". */
+  openaiAuthMode: "openaiAuthMode",
+  openaiApiKey: "openaiApiKey",
+  /** OpenAI model slug; null means "the first model the account lists". */
+  openaiModel: "openaiModel",
+  /** Cached `GET /models` result for the OpenAI credentials in use. */
+  modelCatalog: "modelCatalog",
   autoRebuild: "autoRebuild",
   /** ISO timestamp of the last auto-build *attempted* (success or not). */
   lastAutoBuildAttempt: "lastAutoBuildAttempt",
@@ -34,15 +47,26 @@ export interface Homepage {
 }
 
 export interface Settings {
+  engine: EngineId;
+  /** Anthropic API key (Claude engine). */
   apiKey: string | null;
+  /** Claude model. */
+  model: HomepageModel;
+  openaiAuthMode: "siwc" | "apiKey";
+  openaiApiKey: string | null;
+  openaiModel: string | null;
   systemPrompt: string;
   blockedSites: string[];
-  model: HomepageModel;
   /** Unset means on — auto-rebuild is opt-out. */
   autoRebuild: boolean;
 }
 
-/** The `KVStore` agent-core persists its agent/environment/session IDs through. */
+export interface ModelCatalog {
+  models: ModelInfo[];
+  fetchedAt: string;
+}
+
+/** The `KVStore` the engines persist their session/checkpoint state through. */
 export const extensionStore: KVStore = {
   async get<T>(key: string): Promise<T | undefined> {
     const result = await browser.storage.local.get(key);
@@ -58,27 +82,32 @@ export const extensionStore: KVStore = {
 
 export async function loadSettings(): Promise<Settings> {
   const s = await browser.storage.local.get([
+    KEYS.engine,
     KEYS.apiKey,
+    KEYS.model,
+    KEYS.openaiAuthMode,
+    KEYS.openaiApiKey,
+    KEYS.openaiModel,
     KEYS.systemPrompt,
     KEYS.blockedSites,
-    KEYS.model,
     KEYS.autoRebuild,
   ]);
   const model = s[KEYS.model] as string | undefined;
   return {
+    engine: s[KEYS.engine] === "openai" ? "openai" : DEFAULT_ENGINE,
     apiKey: (s[KEYS.apiKey] as string | undefined) ?? null,
-    systemPrompt: (s[KEYS.systemPrompt] as string | undefined) ?? "",
-    blockedSites: (s[KEYS.blockedSites] as string[] | undefined) ?? [...DEFAULT_BLOCKED_SITES],
     // Fall back if a stored model is no longer offered.
     model: MODEL_CHOICES.find((m) => m.id === model)?.id ?? DEFAULT_MODEL,
+    openaiAuthMode: s[KEYS.openaiAuthMode] === "apiKey" ? "apiKey" : "siwc",
+    openaiApiKey: (s[KEYS.openaiApiKey] as string | undefined) ?? null,
+    openaiModel: (s[KEYS.openaiModel] as string | undefined) ?? null,
+    systemPrompt: (s[KEYS.systemPrompt] as string | undefined) ?? "",
+    blockedSites: (s[KEYS.blockedSites] as string[] | undefined) ?? [...DEFAULT_BLOCKED_SITES],
     autoRebuild: s[KEYS.autoRebuild] !== false,
   };
 }
 
-export async function saveSetting<K extends "apiKey" | "systemPrompt" | "blockedSites" | "model" | "autoRebuild">(
-  key: K,
-  value: Settings[K],
-): Promise<void> {
+export async function saveSetting<K extends keyof Settings>(key: K, value: Settings[K]): Promise<void> {
   await browser.storage.local.set({ [KEYS[key]]: value });
 }
 
@@ -89,4 +118,22 @@ export async function loadHomepage(): Promise<Homepage | undefined> {
 export async function saveHomepage(code: string): Promise<void> {
   const homepage: Homepage = { code, timestamp: new Date().toISOString() };
   await extensionStore.set(KEYS.homepage, homepage);
+}
+
+export async function loadModelCatalog(): Promise<ModelCatalog | undefined> {
+  return extensionStore.get<ModelCatalog>(KEYS.modelCatalog);
+}
+
+export async function saveModelCatalog(models: ModelInfo[]): Promise<void> {
+  await extensionStore.set(KEYS.modelCatalog, { models, fetchedAt: new Date().toISOString() } satisfies ModelCatalog);
+}
+
+/**
+ * The OpenAI slug to build with: the chosen model if the account still lists
+ * it, otherwise the first listed model, otherwise the chosen/fallback slug as-is.
+ */
+export function resolveOpenAIModel(chosen: string | null, catalog: ModelCatalog | undefined, fallback: string): string {
+  const listed = catalog?.models ?? [];
+  if (chosen && (listed.length === 0 || listed.some((m) => m.slug === chosen))) return chosen;
+  return listed[0]?.slug ?? chosen ?? fallback;
 }
