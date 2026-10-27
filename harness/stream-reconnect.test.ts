@@ -64,7 +64,7 @@ test("reconnects when the stream closes before the session finishes", async () =
     getPageHtml: async ({ urls }) => ({ pages: urls.map((url) => ({ url, title: "t", html: "<p>hi</p>" })), failed: [] }),
   };
 
-  const result = await runHomepageBuild({ client, store, bridge });
+  const result = await runHomepageBuild({ engine: "claude", client, store, bridge });
 
   expect(opened).toBe(2);
   expect(result.code).toContain("PersonalizedHomepage");
@@ -140,7 +140,7 @@ test("resends a tool result whose send failed, without re-running the tool", asy
     },
   };
 
-  const result = await runHomepageBuild({ client, store, bridge });
+  const result = await runHomepageBuild({ engine: "claude", client, store, bridge });
 
   expect(result.code).toContain("PersonalizedHomepage");
   expect(scrapes).toBe(1);

@@ -1,55 +1,108 @@
-import { useCallback, useEffect, useState } from "react";
-import { DEFAULT_MODEL, DEFAULT_BLOCKED_SITES, type HomepageModel } from "@homepage/agent-core";
-import { BUILD_STEPS } from "@/lib/protocol";
-import { KEYS, extensionStore, loadHomepage, loadSettings, saveSetting } from "@/lib/storage";
+import { useCallback, useEffect, useState, type CSSProperties } from "react";
+import {
+  CLAUDE_STORAGE_KEYS,
+  DEFAULT_MODEL,
+  DEFAULT_BLOCKED_SITES,
+  OPENAI_STORAGE_KEYS,
+  findSkin,
+  type EngineId,
+  type HomepageModel,
+  type SkinId,
+} from "@homepage/agent-core";
+import { BUILD_STEPS, type AuthState } from "@/lib/protocol";
+import { extensionStore, loadHomepage, loadSettings, saveSetting, type LinkTarget } from "@/lib/storage";
+import {
+  applyTheme,
+  loadThemePreference,
+  nextTheme,
+  onSystemThemeChange,
+  resolveTheme,
+  saveThemePreference,
+  type ResolvedTheme,
+  type ThemePreference,
+} from "@/lib/theme";
 import { toRenderable } from "@/lib/transpile";
-import { ApiKeySetup } from "./components/ApiKeySetup";
 import { BuildProgress } from "./components/BuildProgress";
 import { HomepagePreview } from "./components/HomepagePreview";
 import { SettingsModal } from "./components/SettingsModal";
-import { btn, errorBox } from "./components/ui";
+import { Setup } from "./components/Setup";
+import { ThemeToggle } from "./components/ThemeToggle";
+import { UsageLimitNotice } from "./components/UsageLimitNotice";
+import { btn, btnQuiet, errorBox } from "./components/ui";
 import { useHomepageBuild } from "./useHomepageBuild";
 
 export default function App() {
   const [loading, setLoading] = useState(true);
-  const [apiKey, setApiKey] = useState<string | null>(null);
   const [systemPrompt, setSystemPrompt] = useState("");
   const [blockedSites, setBlockedSites] = useState<string[]>(DEFAULT_BLOCKED_SITES);
   const [model, setModel] = useState<HomepageModel>(DEFAULT_MODEL);
+  const [openaiModel, setOpenaiModel] = useState<string | null>(null);
+  /** The look applied over the generated page; null = as built. */
+  const [skin, setSkin] = useState<SkinId | null>(null);
+  const [linkTarget, setLinkTarget] = useState<LinkTarget>("newTab");
   const [autoRebuild, setAutoRebuild] = useState(true);
   /** Transpiled homepage, ready for Sandpack. */
   const [renderedCode, setRenderedCode] = useState<string | null>(null);
-  /** A session left mid-flight, offered as "Resume interrupted build". */
-  const [resumable, setResumable] = useState<string | null>(null);
+  /** A build left mid-flight (Claude session or OpenAI checkpoint), offered as "Resume interrupted build". */
+  const [resumable, setResumable] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   /** Expand the full progress view over an existing homepage. */
   const [viewProgress, setViewProgress] = useState(false);
   /** The error the user dismissed, so a stale banner doesn't linger. */
   const [dismissedError, setDismissedError] = useState<string | null>(null);
+  /** Colour scheme: system, dark or light. Applied to <html>; the preview follows over postMessage. */
+  const [theme, setTheme] = useState<ThemePreference>("system");
+  const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() => resolveTheme("system"));
 
-  const { state, build, cancel } = useHomepageBuild((code) => setRenderedCode(toRenderable(code)));
+  const { state, auth, models, build, cancel, dismissNotice, refreshAuth, signIn, cancelSignIn, signOut, loadModels } =
+    useHomepageBuild((code) => setRenderedCode(toRenderable(code)));
 
   // Once a build finishes, drop back to the homepage view.
   useEffect(() => {
     if (!state.running) setViewProgress(false);
   }, [state.running]);
 
+  // Theme: stored preference wins over the localStorage mirror theme-boot applied.
+  useEffect(() => {
+    void loadThemePreference().then((pref) => {
+      setTheme(pref);
+      applyTheme(pref);
+      setResolvedTheme(resolveTheme(pref));
+    });
+  }, []);
+  useEffect(() => {
+    if (theme !== "system") return;
+    return onSystemThemeChange((next) => setResolvedTheme(next));
+  }, [theme]);
+  const cycleTheme = useCallback(async () => {
+    const pref = nextTheme(theme);
+    setTheme(pref);
+    applyTheme(pref);
+    setResolvedTheme(resolveTheme(pref));
+    await saveThemePreference(pref);
+  }, [theme]);
+  const themeToggle = (style?: CSSProperties) => <ThemeToggle theme={theme} onCycle={cycleTheme} style={style} />;
+  const fixedToggle = <div style={{ position: "fixed", top: 20, right: 20, zIndex: 999 }}>{themeToggle()}</div>;
+
   // Scheduled rebuilds are driven by the worker's alarm, not by opening a tab;
   // useHomepageBuild surfaces any build already in flight.
   useEffect(() => {
     (async () => {
       try {
-        const [settings, homepage, activeSession] = await Promise.all([
+        const [settings, homepage, activeSession, checkpoint] = await Promise.all([
           loadSettings(),
           loadHomepage(),
-          extensionStore.get<string>(KEYS.activeSessionId),
+          extensionStore.get<string>(CLAUDE_STORAGE_KEYS.activeSessionId),
+          extensionStore.get<unknown>(OPENAI_STORAGE_KEYS.activeBuild),
         ]);
-        setApiKey(settings.apiKey);
         setSystemPrompt(settings.systemPrompt);
         setBlockedSites(settings.blockedSites);
         setModel(settings.model);
+        setOpenaiModel(settings.openaiModel);
+        setSkin(settings.skin);
+        setLinkTarget(settings.linkTarget);
         setAutoRebuild(settings.autoRebuild);
-        setResumable(activeSession ?? null);
+        setResumable(Boolean(activeSession || checkpoint));
         if (homepage?.code) setRenderedCode(toRenderable(homepage.code));
       } finally {
         setLoading(false);
@@ -57,10 +110,52 @@ export default function App() {
     })();
   }, []);
 
-  const saveKey = useCallback(async (key: string) => {
-    await saveSetting("apiKey", key);
-    setApiKey(key);
-  }, []);
+  // ---- credentials and engine: saved here, judged by the worker ------------
+  const chooseEngine = useCallback(
+    async (engine: EngineId) => {
+      await saveSetting("engine", engine);
+      refreshAuth();
+    },
+    [refreshAuth],
+  );
+  const chooseOpenAIMode = useCallback(
+    async (mode: AuthState["openai"]["mode"]) => {
+      await saveSetting("openaiAuthMode", mode);
+      refreshAuth();
+    },
+    [refreshAuth],
+  );
+  /**
+   * From the usage-limit notice: switch the OpenAI engine to API-key billing.
+   * With a key already saved the build starts at once; without one, the setup
+   * screen opens on the OpenAI key field.
+   */
+  const switchToApiKey = useCallback(async () => {
+    const hasKey = Boolean(auth?.openai.apiKeySaved);
+    await chooseOpenAIMode("apiKey");
+    if (hasKey) build();
+  }, [auth, chooseOpenAIMode, build]);
+  const saveAnthropicKey = useCallback(
+    async (key: string) => {
+      await saveSetting("apiKey", key);
+      refreshAuth();
+    },
+    [refreshAuth],
+  );
+  const saveOpenAIKey = useCallback(
+    async (key: string) => {
+      await saveSetting("openaiApiKey", key);
+      refreshAuth();
+    },
+    [refreshAuth],
+  );
+  const forgetKey = useCallback(async () => {
+    if (!auth) return;
+    if (auth.engine === "claude") await saveSetting("apiKey", null);
+    else await saveSetting("openaiApiKey", null);
+    setShowSettings(false);
+    refreshAuth();
+  }, [auth, refreshAuth]);
 
   const savePrompt = useCallback(
     async (prompt: string, sites: string[]) => {
@@ -79,13 +174,78 @@ export default function App() {
     setModel(next);
     await saveSetting("model", next);
   }, []);
+  const changeOpenAIModel = useCallback(async (next: string) => {
+    setOpenaiModel(next);
+    await saveSetting("openaiModel", next);
+  }, []);
+  const changeSkin = useCallback(async (next: SkinId | null) => {
+    setSkin(next);
+    await saveSetting("skin", next);
+  }, []);
+  const changeLinkTarget = useCallback(async (next: LinkTarget) => {
+    setLinkTarget(next);
+    await saveSetting("linkTarget", next);
+  }, []);
   const toggleAutoRebuild = useCallback(async (next: boolean) => {
     setAutoRebuild(next);
     await saveSetting("autoRebuild", next);
   }, []);
 
-  if (loading) return <div style={{ padding: 20, textAlign: "center" }}>Loading…</div>;
-  if (!apiKey) return <ApiKeySetup onSave={saveKey} />;
+  if (loading || auth === null) return <div style={{ padding: 20, textAlign: "center" }}>Loading…</div>;
+
+  if (!auth.ready) {
+    return (
+      <>
+        {fixedToggle}
+        <Setup
+        auth={auth}
+        onChooseEngine={chooseEngine}
+        onChooseOpenAIMode={chooseOpenAIMode}
+        onSaveAnthropicKey={saveAnthropicKey}
+        onSaveOpenAIKey={saveOpenAIKey}
+        onSignIn={signIn}
+        onCancelSignIn={cancelSignIn}
+        onSignOut={() => signOut()}
+        />
+      </>
+    );
+  }
+
+  const settingsModal = showSettings && (
+    <SettingsModal
+      initialPrompt={systemPrompt}
+      blockedSites={blockedSites}
+      auth={auth}
+      onChangeEngine={chooseEngine}
+      model={model}
+      onChangeModel={changeModel}
+      onChangeOpenAIMode={chooseOpenAIMode}
+      openaiModel={openaiModel}
+      models={models}
+      onLoadModels={loadModels}
+      onChangeOpenAIModel={changeOpenAIModel}
+      onForgetKey={forgetKey}
+      onSignOut={signOut}
+      skin={skin}
+      onChangeSkin={changeSkin}
+      linkTarget={linkTarget}
+      onChangeLinkTarget={changeLinkTarget}
+      autoRebuild={autoRebuild}
+      onToggleAutoRebuild={toggleAutoRebuild}
+      onClose={() => setShowSettings(false)}
+      onSave={savePrompt}
+    />
+  );
+
+  // The usage-limit notice only concerns builds billed to the ChatGPT plan.
+  const usageNotice =
+    state.notice?.kind === "usage-limit" && auth.engine === "openai" && auth.openai.mode === "siwc" ? state.notice : null;
+  const noticeProps = usageNotice && {
+    notice: usageNotice,
+    apiKeySaved: auth.openai.apiKeySaved,
+    onUseApiKey: () => void switchToApiKey(),
+    onRetry: () => build(),
+  };
 
   // With no homepage to fall back to, a running build takes over the tab.
   if (state.running && (!renderedCode || viewProgress)) {
@@ -101,24 +261,33 @@ export default function App() {
   if (!renderedCode) {
     return (
       <div style={{ maxWidth: 560, margin: "14vh auto", padding: 24, fontFamily: "system-ui" }}>
+        {fixedToggle}
         <h1 style={{ fontSize: 26 }}>Build your homepage</h1>
-        <p style={{ color: "#555", lineHeight: 1.6 }}>
+        <p style={{ color: "var(--muted)", lineHeight: 1.6 }}>
           The agent reads your browsing history, opens the pages you actually follow, and writes a
           homepage from what it finds today.
         </p>
-        {state.error && (
-          <div style={{ ...errorBox, margin: "16px 0", padding: 12, borderRadius: 4 }}>{state.error}</div>
+        {noticeProps && <UsageLimitNotice variant="panel" {...noticeProps} />}
+        {!noticeProps && state.error && (
+          <div style={{ ...errorBox, margin: "16px 0", padding: 12, borderRadius: 4 }}>
+            {state.error}
+            <ActivityLog logs={state.logs} />
+          </div>
         )}
-        <div style={{ display: "flex", gap: 12, marginTop: 16 }}>
+        <div style={{ display: "flex", gap: 12, marginTop: 16, alignItems: "center" }}>
           <button style={btn} onClick={() => build()}>
             Build today&apos;s homepage
           </button>
           {resumable && (
-            <button style={{ ...btn, backgroundColor: "#555" }} onClick={() => build({ resume: true })}>
+            <button style={btnQuiet} onClick={() => build({ resume: true })}>
               Resume interrupted build
             </button>
           )}
+          <button style={btnQuiet} onClick={() => setShowSettings(true)}>
+            ⚙️ Settings
+          </button>
         </div>
+        {settingsModal}
       </div>
     );
   }
@@ -132,7 +301,7 @@ export default function App() {
           // A build is running in the background (from here, another tab, or the
           // scheduled rebuild). Let the user watch it without losing this page.
           <button
-            style={{ ...btn, backgroundColor: "#0a7", display: "flex", alignItems: "center", gap: 8 }}
+            style={{ ...btn, backgroundColor: "var(--success)", color: "#fff", display: "flex", alignItems: "center", gap: 8 }}
             onClick={() => setViewProgress(true)}
             title="View build progress"
           >
@@ -155,9 +324,12 @@ export default function App() {
         <button style={btn} onClick={() => setShowSettings(true)} title="Customize homepage">
           ⚙️ Settings
         </button>
+        {themeToggle({ width: 36, height: 36 })}
       </div>
 
-      {showError && (
+      {noticeProps && <UsageLimitNotice variant="banner" onDismiss={dismissNotice} {...noticeProps} />}
+
+      {!noticeProps && showError && (
         <div
           style={{
             ...errorBox,
@@ -175,8 +347,9 @@ export default function App() {
         >
           <span style={{ flex: 1 }}>
             <b>Build failed.</b> {state.error}
+            <ActivityLog logs={state.logs} />
           </span>
-          <button style={{ ...btn, padding: "4px 10px", backgroundColor: "#a02620" }} onClick={() => build()}>
+          <button style={{ ...btn, padding: "4px 10px", backgroundColor: "var(--danger-strong)", color: "#fff" }} onClick={() => build()}>
             Retry
           </button>
           <button
@@ -184,7 +357,7 @@ export default function App() {
             style={{
               background: "transparent",
               border: "none",
-              color: "#a02620",
+              color: "var(--danger-fg)",
               cursor: "pointer",
               fontSize: 16,
               lineHeight: 1,
@@ -196,20 +369,34 @@ export default function App() {
         </div>
       )}
 
-      <HomepagePreview code={renderedCode} />
+      <HomepagePreview code={renderedCode} theme={theme} resolvedTheme={resolvedTheme} skin={findSkin(skin) ?? null} linkTarget={linkTarget} />
 
-      {showSettings && (
-        <SettingsModal
-          initialPrompt={systemPrompt}
-          blockedSites={blockedSites}
-          model={model}
-          onChangeModel={changeModel}
-          autoRebuild={autoRebuild}
-          onToggleAutoRebuild={toggleAutoRebuild}
-          onClose={() => setShowSettings(false)}
-          onSave={savePrompt}
-        />
-      )}
+      {settingsModal}
     </div>
+  );
+}
+
+/** The tail of the worker's log, folded under an error so a failure can be reported with context. */
+function ActivityLog({ logs }: { logs: string[] }) {
+  if (logs.length === 0) return null;
+  return (
+    <details style={{ marginTop: 8 }}>
+      <summary style={{ cursor: "pointer", fontSize: 12 }}>Activity log ({logs.length} lines)</summary>
+      <pre
+        style={{
+          margin: "6px 0 0",
+          padding: 8,
+          background: "var(--panel)",
+          borderRadius: 4,
+          fontSize: 11,
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-all",
+          maxHeight: 240,
+          overflow: "auto",
+        }}
+      >
+        {logs.slice(-25).join("\n")}
+      </pre>
+    </details>
   );
 }

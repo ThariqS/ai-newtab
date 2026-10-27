@@ -7,6 +7,8 @@
     "dev": "pnpm --filter @homepage/extension dev",
     "typecheck": "pnpm -r typecheck",
     "test": "bun test harness/",
+    "agent:login": "bun harness/siwc-login.ts",
+    "agent:models": "bun harness/models.ts",
     "agent:run": "bun harness/run-agent.ts",
     "agent:verify": "bun harness/verify-homepage.ts",
     "agent:resume-test": "bun harness/test-resume.ts crash && bun harness/test-resume.ts resume",
