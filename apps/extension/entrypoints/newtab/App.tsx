@@ -1,13 +1,24 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { DEFAULT_MODEL, DEFAULT_BLOCKED_SITES, type HomepageModel } from "@homepage/agent-core";
 import { BUILD_STEPS } from "@/lib/protocol";
 import { KEYS, extensionStore, loadHomepage, loadSettings, saveSetting } from "@/lib/storage";
+import {
+  applyTheme,
+  loadThemePreference,
+  nextTheme,
+  onSystemThemeChange,
+  resolveTheme,
+  saveThemePreference,
+  type ResolvedTheme,
+  type ThemePreference,
+} from "@/lib/theme";
 import { toRenderable } from "@/lib/transpile";
 import { ApiKeySetup } from "./components/ApiKeySetup";
 import { BuildProgress } from "./components/BuildProgress";
 import { HomepagePreview } from "./components/HomepagePreview";
 import { SettingsModal } from "./components/SettingsModal";
-import { btn, errorBox } from "./components/ui";
+import { ThemeToggle } from "./components/ThemeToggle";
+import { btn, btnQuiet, errorBox } from "./components/ui";
 import { useHomepageBuild } from "./useHomepageBuild";
 
 export default function App() {
@@ -26,6 +37,9 @@ export default function App() {
   const [viewProgress, setViewProgress] = useState(false);
   /** The error the user dismissed, so a stale banner doesn't linger. */
   const [dismissedError, setDismissedError] = useState<string | null>(null);
+  /** Colour scheme: system, dark or light. Applied to <html>; the preview follows over postMessage. */
+  const [theme, setTheme] = useState<ThemePreference>("system");
+  const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>(() => resolveTheme("system"));
 
   const { state, build, cancel } = useHomepageBuild((code) => setRenderedCode(toRenderable(code)));
 
@@ -33,6 +47,31 @@ export default function App() {
   useEffect(() => {
     if (!state.running) setViewProgress(false);
   }, [state.running]);
+
+  // Theme: stored preference wins over the localStorage mirror theme-boot applied.
+  useEffect(() => {
+    void loadThemePreference().then((pref) => {
+      setTheme(pref);
+      applyTheme(pref);
+      setResolvedTheme(resolveTheme(pref));
+    });
+  }, []);
+  useEffect(() => {
+    if (theme !== "system") return;
+    return onSystemThemeChange((next) => setResolvedTheme(next));
+  }, [theme]);
+  const cycleTheme = useCallback(async () => {
+    const pref = nextTheme(theme);
+    setTheme(pref);
+    applyTheme(pref);
+    setResolvedTheme(resolveTheme(pref));
+    await saveThemePreference(pref);
+  }, [theme]);
+  const themeToggle = (style?: CSSProperties) => <ThemeToggle theme={theme} onCycle={cycleTheme} style={style} />;
+  // The homepage toolbar buttons are 36px tall; the toggle matches them there.
+  const fixedToggle = (
+    <div style={{ position: "fixed", top: 20, right: 20, zIndex: 999 }}>{themeToggle()}</div>
+  );
 
   // Scheduled rebuilds are driven by the worker's alarm, not by opening a tab;
   // useHomepageBuild surfaces any build already in flight.
@@ -85,7 +124,14 @@ export default function App() {
   }, []);
 
   if (loading) return <div style={{ padding: 20, textAlign: "center" }}>Loading…</div>;
-  if (!apiKey) return <ApiKeySetup onSave={saveKey} />;
+  if (!apiKey) {
+    return (
+      <>
+        {fixedToggle}
+        <ApiKeySetup onSave={saveKey} />
+      </>
+    );
+  }
 
   // With no homepage to fall back to, a running build takes over the tab.
   if (state.running && (!renderedCode || viewProgress)) {
@@ -101,8 +147,9 @@ export default function App() {
   if (!renderedCode) {
     return (
       <div style={{ maxWidth: 560, margin: "14vh auto", padding: 24, fontFamily: "system-ui" }}>
+        {fixedToggle}
         <h1 style={{ fontSize: 26 }}>Build your homepage</h1>
-        <p style={{ color: "#555", lineHeight: 1.6 }}>
+        <p style={{ color: "var(--muted)", lineHeight: 1.6 }}>
           The agent reads your browsing history, opens the pages you actually follow, and writes a
           homepage from what it finds today.
         </p>
@@ -114,7 +161,7 @@ export default function App() {
             Build today&apos;s homepage
           </button>
           {resumable && (
-            <button style={{ ...btn, backgroundColor: "#555" }} onClick={() => build({ resume: true })}>
+            <button style={btnQuiet} onClick={() => build({ resume: true })}>
               Resume interrupted build
             </button>
           )}
@@ -132,7 +179,7 @@ export default function App() {
           // A build is running in the background (from here, another tab, or the
           // scheduled rebuild). Let the user watch it without losing this page.
           <button
-            style={{ ...btn, backgroundColor: "#0a7", display: "flex", alignItems: "center", gap: 8 }}
+            style={{ ...btn, backgroundColor: "var(--success)", color: "#fff", display: "flex", alignItems: "center", gap: 8 }}
             onClick={() => setViewProgress(true)}
             title="View build progress"
           >
@@ -155,6 +202,7 @@ export default function App() {
         <button style={btn} onClick={() => setShowSettings(true)} title="Customize homepage">
           ⚙️ Settings
         </button>
+        {themeToggle({ width: 36, height: 36 })}
       </div>
 
       {showError && (
@@ -176,7 +224,7 @@ export default function App() {
           <span style={{ flex: 1 }}>
             <b>Build failed.</b> {state.error}
           </span>
-          <button style={{ ...btn, padding: "4px 10px", backgroundColor: "#a02620" }} onClick={() => build()}>
+          <button style={{ ...btn, padding: "4px 10px", backgroundColor: "var(--danger-strong)", color: "#fff" }} onClick={() => build()}>
             Retry
           </button>
           <button
@@ -184,7 +232,7 @@ export default function App() {
             style={{
               background: "transparent",
               border: "none",
-              color: "#a02620",
+              color: "var(--danger-fg)",
               cursor: "pointer",
               fontSize: 16,
               lineHeight: 1,
@@ -196,7 +244,7 @@ export default function App() {
         </div>
       )}
 
-      <HomepagePreview code={renderedCode} />
+      <HomepagePreview code={renderedCode} theme={theme} resolvedTheme={resolvedTheme} />
 
       {showSettings && (
         <SettingsModal

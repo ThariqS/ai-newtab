@@ -60,7 +60,12 @@ You have four capabilities:
   external stylesheet.
 - Every link must be a real absolute URL taken from the scraped content. Never
   invent a URL, never leave an \`href="#"\` placeholder.
-- Responsive, works dark or light, hover states and transitions where they help.
+- Responsive, hover states and transitions where they help.
+- Dark and light: define your colors as CSS variables on \`:root\` in a \`<style>\` element the
+  component renders, redefine them for dark under \`@media (prefers-color-scheme: dark)\` with
+  the selector \`:root:not([data-theme="light"])\`, and once more under \`:root[data-theme="dark"]\`.
+  The host sets \`data-theme\` to "dark" or "light" on \`<html>\` when the user forces a scheme;
+  absent means follow the system. Use those variables for every color.
 - Emoji are fine as category markers; icon libraries are not.
 
 ## Editorial judgement
