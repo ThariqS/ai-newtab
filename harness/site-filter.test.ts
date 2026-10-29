@@ -70,7 +70,7 @@ async function runTools(urls: string[], blockedSites?: string[] | (() => Promise
     getHistory: async () => ({ sites: fixtureHistory(), totalSitesSeen: fixtureHistory().length }),
     getPageHtml: scrape ?? (async ({ urls }) => { calls.push(urls); return { pages: [], failed: urls.map(url => ({ url, reason: "unavailable" })) }; }),
   };
-  await runHomepageBuild({ client, store, bridge, blockedSites, resumeSessionId: resume ? "session" : undefined, callbacks: { onLog: line => logs.push(line) } });
+  await runHomepageBuild({ engine: "claude", client, store, bridge, blockedSites, resumeSessionId: resume ? "session" : undefined, callbacks: { onLog: line => logs.push(line) } });
   return { results, calls, logs, uploads };
 }
 

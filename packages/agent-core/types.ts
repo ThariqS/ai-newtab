@@ -1,14 +1,16 @@
 /**
- * Contracts shared by every host that can drive the homepage agent.
+ * Contracts shared by every host that can drive the homepage agent, whichever
+ * engine runs it.
  *
- * The orchestrator is deliberately ignorant of *where* it runs. The extension
- * supplies a bridge backed by `chrome.history` / `chrome.tabs`; the Node test
- * harness supplies one backed by fixtures and `fetch`. Nothing in this package
- * may import `chrome`, `browser`, or `node:*`.
+ * The orchestrators are deliberately ignorant of *where* they run. The
+ * extension supplies a bridge backed by `chrome.history` / `chrome.tabs`; the
+ * Bun harness supplies one backed by fixtures and `fetch`. Nothing in this
+ * package may import `chrome`, `browser`, or `node:*`.
  */
 
-/** One domain's worth of browsing history, narrowed to fit in a context window. */
+/** One site's worth of browsing history, narrowed to fit in a context window. */
 export interface SiteDigest {
+  /** A hostname, or a community inside a hub site, e.g. `reddit.com/r/homelab`. */
   domain: string;
   visits: number;
   pages: number;
@@ -26,15 +28,15 @@ export interface GetHistoryResult {
   sites: SiteDigest[];
 }
 
-/** A page whose HTML now lives in the session sandbox rather than in context. */
+/** A page whose HTML now lives in the engine's sandbox rather than in context. */
 export interface PageRef {
   url: string;
   title: string;
   /**
-   * The path the sandbox actually resolved, read back off the `resources.add()`
-   * response. Never the path we asked for — the API re-roots every file resource
-   * under `/mnt/session/uploads/`, so a requested `/workspace/x.html` lands at
-   * `/mnt/session/uploads/workspace/x.html`.
+   * The path the sandbox actually resolved. For the Claude engine, read back
+   * off the `resources.add()` response — never the path we asked for, since the
+   * API re-roots every file resource under `/mnt/session/uploads/`. The OpenAI
+   * engine's in-memory sandbox mounts at the same root for consistency.
    */
   mountPath: string;
   /** Lets the model choose grep-first over read-whole. */
@@ -71,7 +73,7 @@ export interface ScrapedPage {
 
 /**
  * The two capabilities only a real browser has. Everything else the agent needs
- * (a filesystem, grep, read) is supplied by the session sandbox.
+ * (a filesystem, grep, read, write) is supplied by the engine's sandbox.
  */
 export interface BrowserBridge {
   getHistory(args: {
@@ -85,7 +87,7 @@ export interface BrowserBridge {
   }): Promise<{ pages: ScrapedPage[]; failed: Array<{ url: string; reason: string }> }>;
 }
 
-/** Minimal persistence. `chrome.storage.local` in the extension, a JSON file in Node. */
+/** Minimal persistence. `chrome.storage.local` in the extension, a JSON file in Bun. */
 export interface KVStore {
   get<T>(key: string): Promise<T | undefined>;
   set(key: string, value: unknown): Promise<void>;
@@ -111,9 +113,31 @@ export interface RunCallbacks {
   onLog?(line: string): void;
 }
 
+/** Which model provider runs the build. */
+export type EngineId = "claude" | "openai";
+
 export interface HomepageBuildResult {
   code: string;
-  sessionId: string;
-  /** Where the code came from: a session output file, or a fenced block in the final message. */
-  source: "session-output" | "message-fence";
+  engine: EngineId;
+  /** The Claude session ID, or the OpenAI engine's local build ID. */
+  id: string;
+  /** Where the code came from: the sandbox's output file, or a fenced block in the final message. */
+  source: "output-file" | "message-fence";
+  /** Model turns taken, when the engine counts them (one per Responses request). */
+  turns?: number;
+}
+
+/** Options every engine takes. */
+export interface CommonRunOptions {
+  bridge: BrowserBridge;
+  store: KVStore;
+  userSystemPrompt?: string;
+  /**
+   * Hosts the tools must never read. A getter is re-read before every tool call,
+   * so a list saved mid-build applies to the rest of that build.
+   */
+  blockedSites?: string[] | (() => Promise<string[]>);
+  callbacks?: RunCallbacks;
+  signal?: AbortSignal;
+  now?: Date;
 }

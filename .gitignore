@@ -4,10 +4,12 @@ dist/
 .wxt/
 coverage/
 
-# Secrets — your Anthropic key goes here for the harness
+# Secrets — harness keys and Sign in with ChatGPT tokens
 .env
 .env.*
 !.env.example
+.siwc-credentials.json
+.siwc-credentials.json.tmp
 
 # Harness state (agent/environment IDs) and generated homepages
 .agent-state.json

@@ -44,3 +44,20 @@ export function slugifyUrl(url: string): string {
   const slug = host.replace(/[^a-z0-9]+/gi, "_").replace(/^_+|_+$/g, "");
   return slug || "page";
 }
+
+/**
+ * The key history is grouped under. Usually the hostname, but some sites are
+ * hubs of distinct communities the user follows separately: on Reddit every
+ * subreddit is its own source, so `reddit.com/r/homelab` and
+ * `reddit.com/r/nvidia` rank independently instead of collapsing into one
+ * `reddit.com` line the model can only scrape at the root.
+ */
+export function siteKeyForUrl(url: URL): string {
+  const host = url.hostname.toLowerCase().replace(/^www\./, "");
+  const reddit = host.match(/^(?:old|new|np|i|m)\.reddit\.com$|^reddit\.com$/);
+  if (reddit) {
+    const sub = url.pathname.match(/^\/r\/([A-Za-z0-9_]+)/);
+    return sub ? `reddit.com/r/${sub[1].toLowerCase()}` : "reddit.com";
+  }
+  return host;
+}
