@@ -1,38 +1,51 @@
 import { useState } from "react";
-import { btn } from "./ui";
+import { useI18n } from "../i18n";
+import { btn, input } from "./ui";
 
-export function ApiKeySetup({ onSave }: { onSave: (key: string) => void }) {
+const PROVIDERS = {
+  anthropic: {
+    title: "apiKey.anthropic.title",
+    body: "apiKey.anthropic.body",
+    prefix: "sk-ant-",
+    placeholder: "sk-ant-...",
+  },
+  openai: {
+    title: "apiKey.openai.title",
+    body: "apiKey.openai.body",
+    prefix: "sk-",
+    placeholder: "sk-proj-...",
+  },
+} as const;
+
+export function ApiKeySetup({
+  provider,
+  onSave,
+}: {
+  provider: keyof typeof PROVIDERS;
+  onSave: (key: string) => void;
+}) {
+  const { t, rich } = useI18n();
   const [value, setValue] = useState("");
-  const valid = value.trim().startsWith("sk-ant-");
+  const p = PROVIDERS[provider];
+  const valid = value.trim().startsWith(p.prefix);
 
   return (
-    <div style={{ maxWidth: 520, margin: "12vh auto", padding: 24, fontFamily: "system-ui" }}>
-      <h1 style={{ fontSize: 24 }}>Connect your Anthropic API key</h1>
-      <p style={{ color: "#555", lineHeight: 1.6 }}>
-        The agent runs inside this extension and talks to the Anthropic API directly. Your key
-        is stored in <code>chrome.storage.local</code> on this machine and is never sent
-        anywhere else.
-      </p>
+    <div>
+      <h2 style={{ fontSize: 20, marginTop: 0 }}>{t(p.title)}</h2>
+      <p style={{ color: "var(--muted)", lineHeight: 1.6 }}>{rich(p.body, { code: (text) => <code>{text}</code> })}</p>
       <input
         type="password"
         value={value}
         onChange={(e) => setValue(e.target.value)}
-        placeholder="sk-ant-..."
-        style={{
-          width: "100%",
-          padding: 12,
-          fontSize: 14,
-          borderRadius: 4,
-          border: "1px solid #ddd",
-          fontFamily: "ui-monospace, monospace",
-        }}
+        placeholder={p.placeholder}
+        style={{ ...input, fontFamily: "ui-monospace, monospace" }}
       />
       <button
         style={{ ...btn, marginTop: 16, opacity: valid ? 1 : 0.5 }}
         disabled={!valid}
         onClick={() => onSave(value.trim())}
       >
-        Save key
+        {t("apiKey.save")}
       </button>
     </div>
   );

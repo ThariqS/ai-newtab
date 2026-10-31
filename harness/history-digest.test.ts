@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildHistoryDigest, slugifyUrl } from "@homepage/agent-core";
+import { buildHistoryDigest, siteKeyForUrl, slugifyUrl } from "@homepage/agent-core";
 import { fixtureHistory } from "./node-bridge";
 
 describe("buildHistoryDigest", () => {
@@ -66,5 +66,20 @@ describe("slugifyUrl", () => {
 
   test("never returns an empty slug", () => {
     expect(slugifyUrl("///")).toBe("page");
+  });
+});
+
+describe("siteKeyForUrl", () => {
+  test("keeps ordinary sites at the hostname", () => {
+    expect(siteKeyForUrl(new URL("https://www.news.ycombinator.com/item?id=1"))).toBe("news.ycombinator.com");
+    expect(siteKeyForUrl(new URL("https://github.com/coollabsio/coolify/releases"))).toBe("github.com");
+  });
+
+  test("splits Reddit into subreddits, whatever the host variant or case", () => {
+    expect(siteKeyForUrl(new URL("https://www.reddit.com/r/LocalLLaMA/comments/abc/x/"))).toBe("reddit.com/r/localllama");
+    expect(siteKeyForUrl(new URL("https://old.reddit.com/r/homelab/"))).toBe("reddit.com/r/homelab");
+    expect(siteKeyForUrl(new URL("https://reddit.com/r/nvidia/new"))).toBe("reddit.com/r/nvidia");
+    expect(siteKeyForUrl(new URL("https://www.reddit.com/"))).toBe("reddit.com");
+    expect(siteKeyForUrl(new URL("https://www.reddit.com/user/someone/"))).toBe("reddit.com");
   });
 });

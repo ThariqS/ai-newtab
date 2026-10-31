@@ -1,26 +1,29 @@
 import type Anthropic from "@anthropic-ai/sdk";
-import { buildHistoryDigest, slugifyUrl } from "./history-digest";
-import { OUTPUT_PATH, buildKickoffMessage } from "./prompt";
-import { DEFAULT_BLOCKED_SITES, isAllowedUrl, isBlocked, isPrivateAddress, normalizeBlockList } from "./site-filter";
-import { DEFAULTS } from "./schemas";
+import { buildHistoryDigest, slugifyUrl } from "../history-digest";
+import { normalizeScrapedLinks } from "../links";
+import { OUTPUT_PATH, buildKickoffMessage } from "../prompt";
+import { DEFAULT_BLOCKED_SITES, isAllowedUrl, isBlocked, isPrivateAddress, normalizeBlockList } from "../site-filter";
+import { DEFAULTS } from "../schemas";
 import { STORAGE_KEYS, ensureAgent, ensureEnvironment, type HomepageModel } from "./setup";
 import type {
   BrowserBridge,
+  CommonRunOptions,
   GetHistoryResult,
   GetPageHtmlResult,
   HomepageBuildResult,
-  KVStore,
   PageRef,
-  RunCallbacks,
+  PhaseInfo,
   RunPhase,
-} from "./types";
+} from "../types";
+
+export { STORAGE_KEYS } from "./setup";
 
 type SessionEvent = Anthropic.Beta.Sessions.BetaManagedAgentsSessionEvent;
 type CustomToolUse = Anthropic.Beta.Sessions.BetaManagedAgentsAgentCustomToolUseEvent;
 
 /** Callbacks with the optionality resolved, so call sites don't repeat `?.`. */
 interface Emit {
-  phase(phase: RunPhase, detail?: string): void;
+  phase(phase: RunPhase, detail?: string, info?: PhaseInfo): void;
   text(chunk: string): void;
   log(line: string): void;
 }
@@ -33,29 +36,24 @@ const MAX_STREAM_RECONNECTS = 20;
 /** Files mount under this root no matter what path you ask for. Ask for it directly. */
 const UPLOAD_ROOT = "/mnt/session/uploads";
 
-export interface RunOptions {
-  client: Anthropic;
-  bridge: BrowserBridge;
-  store: KVStore;
-  userSystemPrompt?: string;
+export interface ClaudeRunOptions extends CommonRunOptions {
+  engine: "claude";
   /**
-   * Hosts the tools must never read. A getter is re-read before every tool call,
-   * so a list saved mid-build applies to the rest of that build.
+   * `managed` (default): a Managed Agents session, billed at standard rates.
+   * `batch` runs claude/batch-orchestrator.ts instead (ClaudeBatchRunOptions).
    */
-  blockedSites?: string[] | (() => Promise<string[]>);
+  apiMode?: "managed";
+  client: Anthropic;
   /** Ignored when resuming: the session keeps the agent (and model) it started with. */
   model?: HomepageModel;
-  callbacks?: RunCallbacks;
-  signal?: AbortSignal;
   /** Reattach to an existing session instead of creating one (e.g. after the host was killed mid-run). */
   resumeSessionId?: string;
-  now?: Date;
 }
 
-export async function runHomepageBuild(opts: RunOptions): Promise<HomepageBuildResult> {
+export async function runHomepageBuild(opts: ClaudeRunOptions): Promise<HomepageBuildResult> {
   const { client, bridge, store, callbacks, signal } = opts;
   const emit: Emit = {
-    phase: (p, d) => callbacks?.onPhase?.(p, d),
+    phase: (p, d, i) => callbacks?.onPhase?.(p, d, i),
     text: (t) => callbacks?.onText?.(t),
     log: (l) => callbacks?.onLog?.(l),
   };
@@ -280,7 +278,7 @@ export async function runHomepageBuild(opts: RunOptions): Promise<HomepageBuildR
     emit.phase("writing");
     const code = await collectDeliverable(client, sessionId, finalMessage, emit);
     emit.phase("done");
-    return { code: code.code, sessionId, source: code.source };
+    return { code: code.code, engine: "claude", id: sessionId, source: code.source };
   } finally {
     // Privacy: the event log holds every domain, title and page body we sent,
     // and uploads persist independently of the session. Delete both, always.
@@ -316,7 +314,7 @@ async function runGetHistory(
   const daysToAnalyze = input.daysToAnalyze ?? DEFAULTS.daysToAnalyze;
   const maxResults = input.maxResults ?? DEFAULTS.maxResults;
 
-  emit.phase("history", `${daysToAnalyze}d`);
+  emit.phase("history", `${daysToAnalyze}d`, { kind: "days", count: daysToAnalyze });
   const { sites, totalSitesSeen } = await bridge.getHistory({ daysToAnalyze, maxResults });
   const allowed = sites.filter((site) => !isBlocked(site.domain, blockedSites));
   // Blocked domains are dropped from the count too: the model is never told they exist.
@@ -341,7 +339,7 @@ async function runGetPageHtml(
   },
 ): Promise<GetPageHtmlResult> {
   const input = event.input as { urls: string[]; loadDelayMs?: number };
-  ctx.emit.phase("scraping", `${input.urls.length} pages`);
+  ctx.emit.phase("scraping", `${input.urls.length} pages`, { kind: "pages", count: input.urls.length });
 
   const allowed: string[] = [];
   const blocked: GetPageHtmlResult["failed"] = [];
@@ -375,8 +373,9 @@ async function runGetPageHtml(
   for (const page of pages) {
     try {
       const filename = `${slugifyUrl(page.url)}_${refs.length}.html`;
+      const html = normalizeScrapedLinks(page.html, page.finalUrl ?? page.url);
       const upload = await ctx.client.beta.files.upload({
-        file: new File([page.html], filename, { type: "text/html" }),
+        file: new File([html], filename, { type: "text/html" }),
       });
       await ctx.rememberUpload(upload.id);
 
@@ -394,9 +393,9 @@ async function runGetPageHtml(
         // The API re-roots every mount under /mnt/session/uploads. Report what it
         // resolved, not what we asked for, or the model greps a path that isn't there.
         mountPath: resource.mount_path,
-        bytes: page.html.length,
+        bytes: html.length,
       });
-      ctx.emit.log(`mounted ${page.url} -> ${resource.mount_path} (${page.html.length}b)`);
+      ctx.emit.log(`mounted ${page.url} -> ${resource.mount_path} (${html.length}b)`);
     } catch (err) {
       mountFailures.push({ url: page.url, reason: `mount failed: ${String(err)}` });
     }
@@ -443,7 +442,7 @@ async function collectDeliverable(
         const text = await response.text();
         if (text.trim()) {
           emit.log(`deliverable from session output: ${file.filename} (${text.length}b)`);
-          return { code: stripFence(text), source: "session-output" };
+          return { code: stripFence(text), source: "output-file" };
         }
       }
     } catch (err) {

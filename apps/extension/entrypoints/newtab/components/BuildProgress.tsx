@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from "react";
+import type { PhaseInfo } from "@homepage/agent-core";
+import { formatDuration, type Translate } from "@/lib/i18n";
 import { BUILD_STEPS, LOG_RETENTION, type BuildState } from "@/lib/protocol";
+import { useI18n } from "../i18n";
 
 /** Full-screen build view: the step list on the left, live narration and log on the right. */
 export function BuildProgress({
@@ -12,7 +15,10 @@ export function BuildProgress({
   /** Present when a build is running over an existing homepage — offers a way back to it. */
   onBack?: () => void;
 }) {
-  const { stepIndex, detail, narration, logs } = state;
+  const { t } = useI18n();
+  const { stepIndex, detail, detailInfo, narration, logs } = state;
+  // A detail without info is a tool name ("grep", "read"), the same in every language.
+  const detailText = detailInfo ? describePhase(t, detailInfo) : detail;
   const [elapsed, setElapsed] = useState(0);
   const narrRef = useRef<HTMLDivElement>(null);
   const logRef = useRef<HTMLPreElement>(null);
@@ -38,7 +44,7 @@ export function BuildProgress({
       <div className="build-left">
         <div className="build-panel">
           <div className="build-top">
-            <span className="build-title">Building your homepage</span>
+            <span className="build-title">{t("progress.title")}</span>
             <span className="build-elapsed">
               {mm}:{ss}
             </span>
@@ -48,11 +54,11 @@ export function BuildProgress({
             {BUILD_STEPS.map((step, i) => {
               const status = i < stepIndex ? "done" : i === stepIndex ? "active" : "pending";
               return (
-                <li key={step.label} className={`build-step ${status}`}>
+                <li key={step.id} className={`build-step ${status}`}>
                   <span className="build-marker">{status === "done" ? "✓" : i + 1}</span>
                   <div className="build-step-body">
-                    <div className="build-step-label">{step.label}</div>
-                    {status === "active" && detail && <div className="build-step-detail">{detail}</div>}
+                    <div className="build-step-label">{t(`progress.step.${step.id}`)}</div>
+                    {status === "active" && detailText && <div className="build-step-detail">{detailText}</div>}
                   </div>
                 </li>
               );
@@ -61,11 +67,11 @@ export function BuildProgress({
 
           <div style={{ display: "flex", gap: 10 }}>
             <button className="build-cancel" onClick={onCancel}>
-              Cancel
+              {t("common.cancel")}
             </button>
             {onBack && (
               <button className="build-cancel" style={{ background: "transparent" }} onClick={onBack}>
-                ← Back to homepage
+                ← {t("progress.back")}
               </button>
             )}
           </div>
@@ -74,14 +80,14 @@ export function BuildProgress({
 
       <div className="build-right">
         <div className="build-panel">
-          <div className="build-eyebrow">Agent</div>
+          <div className="build-eyebrow">{t("progress.agent")}</div>
           <div className="build-narration" ref={narrRef}>
-            {narration || "Warming up — reading what you’ve been browsing…"}
+            {narration || t("progress.warmingUp")}
           </div>
 
           {logs.length > 0 && (
             <>
-              <div className="build-eyebrow build-log-label">Activity log</div>
+              <div className="build-eyebrow build-log-label">{t("progress.log")}</div>
               <pre className="build-log" ref={logRef}>
                 {logs.slice(-LOG_RETENTION).join("\n")}
               </pre>
@@ -91,4 +97,17 @@ export function BuildProgress({
       </div>
     </div>
   );
+}
+
+function describePhase(t: Translate, info: PhaseInfo): string {
+  switch (info.kind) {
+    case "days":
+      return t("progress.days", { count: info.count });
+    case "pages":
+      return t("progress.pages", { count: info.count });
+    case "batch-submitting":
+      return t("progress.batchSubmitting");
+    case "batch-waiting":
+      return t("progress.batchWaiting", { duration: formatDuration(t, info.seconds) });
+  }
 }

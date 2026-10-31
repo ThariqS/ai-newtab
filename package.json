@@ -7,11 +7,14 @@
     "dev": "pnpm --filter @homepage/extension dev",
     "typecheck": "pnpm -r typecheck",
     "test": "bun test harness/",
+    "agent:login": "bun harness/siwc-login.ts",
+    "agent:models": "bun harness/models.ts",
     "agent:run": "bun harness/run-agent.ts",
     "agent:verify": "bun harness/verify-homepage.ts",
     "agent:resume-test": "bun harness/test-resume.ts crash && bun harness/test-resume.ts resume",
     "agent:retention": "bun harness/check-retention.ts",
-    "extension:test": "bun harness/test-extension.ts"
+    "extension:test": "bun harness/test-extension.ts",
+    "i18n:check": "bun harness/i18n-check.ts"
   },
   "devDependencies": {
     "typescript": "^5.8.3"
