@@ -43,7 +43,7 @@ function fixture(usage?: { input_tokens: number; output_tokens: number; cache_re
     async getHistory() { return { totalSitesSeen: 12, sites: [{ domain: "example.com", totalVisits: 4, uniquePages: 1, lastVisitTime: 0, averageVisitsPerDay: 1, titles: ["Example"], urls: [], relevanceScore: 2 }] }; },
     async getPageHtml() { return { pages: [{ url: "https://example.com", title: "Example", html: "é" }], failed: [{ url: "https://failed.test", reason: "timeout" }] }; },
   };
-  const run = (resumeSessionId?: string) => runHomepageBuild({ client: client as unknown as Anthropic, bridge, store, model: "claude-haiku-5-5", now: new Date("2026-10-08T12:00:00Z"), resumeSessionId });
+  const run = (resumeSessionId?: string, blockedSites?: string[]) => runHomepageBuild({ client: client as unknown as Anthropic, bridge, store, model: "claude-haiku-5-5", now: new Date("2026-10-08T12:00:00Z"), resumeSessionId, blockedSites });
   return { run, store, client, bridge, history, live, sent };
 }
 
@@ -93,4 +93,11 @@ test("uploaded pages remain recorded when mounting fails", async () => {
   expect(receipt.pagesUploaded).toEqual([{ url: "https://example.com", bytes: 2 }]);
   expect(receipt.pagesFailed).toHaveLength(2);
   expect(f.sent.find(e => e.custom_tool_use_id === "pages").is_error).toBe(true);
+});
+
+test("blocked pages enter the receipt as failures and are not uploaded", async () => {
+  const f = fixture();
+  const { receipt } = await f.run(undefined, ["failed.test"]);
+  expect(receipt.pagesUploaded).toEqual([{ url: "https://example.com", bytes: 2 }]);
+  expect(receipt.pagesFailed).toContainEqual({ url: "https://failed.test", reason: "blocked by the user's settings" });
 });

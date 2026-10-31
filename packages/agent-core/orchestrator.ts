@@ -1,6 +1,7 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { buildHistoryDigest, slugifyUrl } from "./history-digest";
 import { OUTPUT_PATH, buildKickoffMessage } from "./prompt";
+import { DEFAULT_BLOCKED_SITES, isAllowedUrl, isBlocked, isPrivateAddress, normalizeBlockList } from "./site-filter";
 import { DEFAULTS } from "./schemas";
 import { DEFAULT_MODEL, STORAGE_KEYS, ensureAgent, ensureEnvironment, type HomepageModel } from "./setup";
 import type {
@@ -27,6 +28,9 @@ interface Emit {
 
 const MANAGED_AGENTS_BETA = "managed-agents-2026-04-01";
 
+/** How many times a dropped session stream is reopened before the build gives up. */
+const MAX_STREAM_RECONNECTS = 20;
+
 /** Files mount under this root no matter what path you ask for. Ask for it directly. */
 const UPLOAD_ROOT = "/mnt/session/uploads";
 
@@ -35,6 +39,11 @@ export interface RunOptions {
   bridge: BrowserBridge;
   store: KVStore;
   userSystemPrompt?: string;
+  /**
+   * Hosts the tools must never read. A getter is re-read before every tool call,
+   * so a list saved mid-build applies to the rest of that build.
+   */
+  blockedSites?: string[] | (() => Promise<string[]>);
   /** Ignored when resuming: the session keeps the agent (and model) it started with. */
   model?: HomepageModel;
   callbacks?: RunCallbacks;
@@ -107,12 +116,20 @@ export async function runHomepageBuild(opts: RunOptions): Promise<HomepageBuildR
    * never receives one leaves the session idle forever — the single
    * unrecoverable bug in this design.
    */
-  const dispatch = async (event: CustomToolUse): Promise<void> => {
+  // Results computed but not yet delivered, by tool-use id. A send that fails
+  // (the connection dropped mid-build) is retried on reconnect with the same
+  // result, instead of scraping the pages again.
+  const undelivered = new Map<string, { is_error?: true; text: string }>();
+
+  const runTool = async (event: CustomToolUse): Promise<{ is_error?: true; text: string }> => {
     try {
+      const blockedSites = normalizeBlockList(
+        (typeof opts.blockedSites === "function" ? await opts.blockedSites() : opts.blockedSites) ?? DEFAULT_BLOCKED_SITES,
+      );
       let result: GetHistoryResult | GetPageHtmlResult;
       switch (event.name) {
         case "getHistory":
-          result = await runGetHistory(event, bridge, emit);
+          result = await runGetHistory(event, bridge, emit, blockedSites);
           receipt.historyWindowDays = result.windowDays;
           receipt.domainsSent = [...new Set([...receipt.domainsSent, ...result.sites.map((s) => s.domain)])];
           receipt.totalSitesSeen = result.totalSitesSeen;
@@ -120,35 +137,37 @@ export async function runHomepageBuild(opts: RunOptions): Promise<HomepageBuildR
           break;
         case "getPageHtml":
           result = await runGetPageHtml(event, {
-            client, bridge, sessionId: sessionId!, rememberUpload, emit, receipt, saveReceipt,
+            client, bridge, sessionId: sessionId!, rememberUpload, emit, blockedSites, receipt, saveReceipt,
           });
           break;
         default:
           throw new Error(`Unknown custom tool: ${event.name}`);
       }
-
-      await client.beta.sessions.events.send(sessionId!, {
-        events: [
-          {
-            type: "user.custom_tool_result",
-            custom_tool_use_id: event.id,
-            content: [{ type: "text", text: JSON.stringify(result) }],
-          },
-        ],
-      });
+      return { text: JSON.stringify(result) };
     } catch (err) {
       emit.log(`tool ${event.name} failed: ${String(err)}`);
-      await client.beta.sessions.events.send(sessionId!, {
-        events: [
-          {
-            type: "user.custom_tool_result",
-            custom_tool_use_id: event.id,
-            is_error: true,
-            content: [{ type: "text", text: String(err) }],
-          },
-        ],
-      });
+      return { is_error: true, text: String(err) };
     }
+  };
+
+  /** Throws only if the result could not be sent; it is kept for the next attempt. */
+  const dispatch = async (event: CustomToolUse): Promise<void> => {
+    let result = undelivered.get(event.id);
+    if (!result) {
+      result = await runTool(event);
+      undelivered.set(event.id, result);
+    }
+    await client.beta.sessions.events.send(sessionId!, {
+      events: [
+        {
+          type: "user.custom_tool_result",
+          custom_tool_use_id: event.id,
+          ...(result.is_error ? { is_error: true } : {}),
+          content: [{ type: "text", text: result.text }],
+        },
+      ],
+    });
+    undelivered.delete(event.id);
   };
 
   const observe = (event: SessionEvent) => {
@@ -175,39 +194,50 @@ export async function runHomepageBuild(opts: RunOptions): Promise<HomepageBuildR
   };
 
   try {
-    // ---- Open the stream BEFORE anything else. It only delivers events emitted
-    // ---- after it opens; send first and the early transitions are gone.
-    let stream = await client.beta.sessions.events.stream(sessionId, undefined, { signal });
+    const seen = new Set<string>();
+    const answered = new Set<string>();
+    let kickedOff = false;
+    let finished = false;
 
-    // ---- Then replay history. Covers the gap before the stream attached, and
-    // ---- is what makes a reattach lossless.
-    const history: SessionEvent[] = [];
-    for await (const event of client.beta.sessions.events.list(sessionId)) {
-      history.push(event);
-    }
+    // A stream can close before the session is done (most often during a long
+    // tool call, while no events flow). That isn't the end of the build:
+    // reconnect, replay what was missed, and keep going.
+    for (let attempt = 0; !finished; attempt++) {
+      if (signal?.aborted) throw new Error("aborted");
+      if (attempt > MAX_STREAM_RECONNECTS) {
+        throw new Error(`Lost the session stream ${MAX_STREAM_RECONNECTS} times; giving up.`);
+      }
+      if (attempt > 0) {
+        emit.log(`stream closed before the session finished; reconnecting (${attempt})`);
+        await new Promise((r) => setTimeout(r, Math.min(1000 * attempt, 5000)));
+      }
 
-    const seen = new Set(history.map((e) => e.id));
-    const answered = new Set(
-      history
-        .filter((e): e is Extract<SessionEvent, { type: "user.custom_tool_result" }> =>
-          e.type === "user.custom_tool_result",
-        )
-        .map((e) => e.custom_tool_use_id),
-    );
-    const kickedOff = history.some((e) => e.type === "user.message");
-    const alreadyDone = history.some(
-      (e) => e.type === "session.status_idle" && e.stop_reason.type === "end_turn",
-    );
+      // ---- Open the stream BEFORE anything else. It only delivers events emitted
+      // ---- after it opens; send first and the early transitions are gone.
+      const stream = await client.beta.sessions.events.stream(sessionId, undefined, { signal });
 
-    for (const event of history) observe(event);
+      // ---- Then replay history. Covers the gap before the stream attached, and
+      // ---- is what makes a reattach (or a reconnect) lossless.
+      const history: SessionEvent[] = [];
+      for await (const event of client.beta.sessions.events.list(sessionId)) {
+        history.push(event);
+      }
 
-    if (!alreadyDone) {
-      // Re-answer any tool call that was left hanging when the stream dropped.
       for (const event of history) {
-        if (event.type === "agent.custom_tool_use" && !answered.has(event.id)) {
-          emit.log(`re-answering orphaned tool call ${event.id}`);
-          await dispatch(event);
-        }
+        if (event.type === "user.custom_tool_result") answered.add(event.custom_tool_use_id);
+        if (event.type === "user.message") kickedOff = true;
+      }
+      for (const event of history) {
+        if (seen.has(event.id)) continue;
+        seen.add(event.id);
+        observe(event);
+      }
+
+      // Only an end after the kickoff counts; a fresh session may idle before it.
+      const kickoffAt = history.findIndex((e) => e.type === "user.message");
+      if (kickoffAt !== -1 && history.slice(kickoffAt).some(isTerminal)) {
+        finished = true;
+        break;
       }
 
       if (!kickedOff) {
@@ -227,32 +257,50 @@ export async function runHomepageBuild(opts: RunOptions): Promise<HomepageBuildR
             },
           ],
         });
+        kickedOff = true;
       }
 
-      for await (const event of stream) {
-        if (signal?.aborted) throw new Error("aborted");
-
-        // Live-preview events carry no `id` and are never terminal. They only
-        // arrive if `event_deltas` was requested, but the stream union includes
-        // them either way — reading `.id` off one would throw.
-        if (event.type === "event_start" || event.type === "event_delta") continue;
-
-        if (!seen.has(event.id)) {
-          seen.add(event.id);
-          observe(event);
-          if (event.type === "agent.custom_tool_use") {
+      try {
+        // Re-answer any tool call that was left hanging when the stream dropped.
+        // `answered` only holds calls whose result reached the session.
+        for (const event of history) {
+          if (event.type === "agent.custom_tool_use" && !answered.has(event.id)) {
+            emit.log(`re-answering orphaned tool call ${event.id}`);
             await dispatch(event);
+            answered.add(event.id);
           }
         }
 
-        // Terminal checks run for *every* event, including ones we've already
-        // seen. `continue`-ing on a duplicate above would skip the terminal
-        // event that arrived in the history fetch, and the loop would never end.
-        if (event.type === "session.status_terminated") break;
-        if (event.type === "session.status_idle" && event.stop_reason.type !== "requires_action") {
-          emit.log(`idle: ${event.stop_reason.type}`);
-          break;
+        for await (const event of stream) {
+          if (signal?.aborted) throw new Error("aborted");
+
+          // Live-preview events carry no `id` and are never terminal. They only
+          // arrive if `event_deltas` was requested, but the stream union includes
+          // them either way — reading `.id` off one would throw.
+          if (event.type === "event_start" || event.type === "event_delta") continue;
+
+          if (!seen.has(event.id)) {
+            seen.add(event.id);
+            observe(event);
+            if (event.type === "agent.custom_tool_use" && !answered.has(event.id)) {
+              await dispatch(event);
+              answered.add(event.id);
+            }
+          }
+
+          // Terminal checks run for *every* event, including ones we've already
+          // seen. `continue`-ing on a duplicate above would skip the terminal
+          // event that arrived in the history fetch, and the loop would never end.
+          if (isTerminal(event)) {
+            if (event.type === "session.status_idle") emit.log(`idle: ${event.stop_reason.type}`);
+            finished = true;
+            break;
+          }
         }
+      } catch (err) {
+        // A dropped connection is retried like a clean close; a cancel is not.
+        if (signal?.aborted) throw err;
+        emit.log(`stream error: ${String(err)}`);
       }
     }
 
@@ -266,11 +314,21 @@ export async function runHomepageBuild(opts: RunOptions): Promise<HomepageBuildR
     emit.phase("cleanup");
     await Promise.allSettled(uploadedFileIds.map((id) => client.beta.files.delete(id)));
     await store.remove(STORAGE_KEYS.uploadedFileIds);
-    await deleteSessionWhenSettled(client, sessionId!, receipt).catch(() => {});
+    if (sessionId) {
+      await deleteSessionWhenSettled(client, sessionId, receipt).catch((err) =>
+        emit.log(`session ${sessionId} was not deleted: ${String(err)}`),
+      );
+    }
     receipt.finishedAt = new Date().toISOString();
     await store.remove(STORAGE_KEYS.buildReceipt);
     await store.remove(STORAGE_KEYS.activeSessionId);
   }
+}
+
+/** The session is done with this turn: it ended, or went idle for any reason but a pending tool call. */
+function isTerminal(event: SessionEvent): boolean {
+  if (event.type === "session.status_terminated") return true;
+  return event.type === "session.status_idle" && event.stop_reason.type !== "requires_action";
 }
 
 // ---------------------------------------------------------------------------
@@ -281,6 +339,7 @@ async function runGetHistory(
   event: CustomToolUse,
   bridge: BrowserBridge,
   emit: Emit,
+  blockedSites: string[],
 ): Promise<GetHistoryResult> {
   const input = event.input as { daysToAnalyze?: number; maxResults?: number };
   const daysToAnalyze = input.daysToAnalyze ?? DEFAULTS.daysToAnalyze;
@@ -288,7 +347,13 @@ async function runGetHistory(
 
   emit.phase("history", `${daysToAnalyze}d`);
   const { sites, totalSitesSeen } = await bridge.getHistory({ daysToAnalyze, maxResults });
-  const digest = buildHistoryDigest(sites, { daysToAnalyze, maxResults, totalSitesSeen });
+  const allowed = sites.filter((site) => !isBlocked(site.domain, blockedSites));
+  // Blocked domains are dropped from the count too: the model is never told they exist.
+  const digest = buildHistoryDigest(allowed, {
+    daysToAnalyze,
+    maxResults,
+    totalSitesSeen: totalSitesSeen - (sites.length - allowed.length),
+  });
   emit.log(`history: ${digest.sites.length} of ${digest.totalSitesSeen} domains`);
   return digest;
 }
@@ -301,6 +366,7 @@ async function runGetPageHtml(
     sessionId: string;
     rememberUpload: (id: string) => Promise<void>;
     emit: Emit;
+    blockedSites: string[];
     receipt: BuildReceipt;
     saveReceipt: () => Promise<void>;
   },
@@ -308,23 +374,44 @@ async function runGetPageHtml(
   const input = event.input as { urls: string[]; loadDelayMs?: number };
   ctx.emit.phase("scraping", `${input.urls.length} pages`);
 
+  const allowed: string[] = [];
+  const blocked: GetPageHtmlResult["failed"] = [];
+  for (const url of input.urls) {
+    // Match on the URL the browser will load; malformed URLs never reach the signed-in browser.
+    if (isAllowedUrl(url, ctx.blockedSites)) allowed.push(url);
+    else blocked.push({ url, reason: "blocked by the user's settings" });
+  }
+
+  // Skip the bridge entirely when nothing is left, so no scraper window opens.
   let scraped: Awaited<ReturnType<BrowserBridge["getPageHtml"]>>;
   try {
-    scraped = await ctx.bridge.getPageHtml({
-      urls: input.urls,
-      loadDelayMs: input.loadDelayMs ?? DEFAULTS.loadDelayMs,
-    });
+    scraped = allowed.length
+      ? await ctx.bridge.getPageHtml({
+          urls: allowed,
+          loadDelayMs: input.loadDelayMs ?? DEFAULTS.loadDelayMs,
+        })
+      : { pages: [], failed: [] };
   } catch (err) {
-    ctx.receipt.pagesFailed.push(...input.urls.map((url) => ({ url, reason: String(err) })));
+    ctx.receipt.pagesFailed.push(...blocked, ...allowed.map((url) => ({ url, reason: String(err) })));
     await ctx.saveReceipt();
     throw err;
   }
-  const { pages, failed } = scraped;
-  ctx.receipt.pagesFailed.push(...failed);
+  const { pages: loaded, failed } = scraped;
+
+  // A redirect can land on a blocked host, and a public-looking name (fritz.box, an
+  // intranet name) can resolve to a private address; drop what it read before anything is uploaded.
+  const pages = loaded.filter((page) => {
+    const urlAllowed = !page.finalUrl || isAllowedUrl(page.finalUrl, ctx.blockedSites);
+    if (urlAllowed && !(page.ip && isPrivateAddress(page.ip))) return true;
+    blocked.push({ url: page.url, reason: "blocked by the user's settings" });
+    return false;
+  });
+  if (blocked.length) ctx.emit.log(`blocked: ${blocked.length} url(s)`);
+  ctx.receipt.pagesFailed.push(...blocked, ...failed);
   await ctx.saveReceipt();
 
   const refs: PageRef[] = [];
-  const mountFailures = [...failed];
+  const mountFailures = [...blocked, ...failed];
 
   for (const page of pages) {
     try {
@@ -362,7 +449,7 @@ async function runGetPageHtml(
     }
   }
 
-  if (refs.length === 0 && mountFailures.length > 0) {
+  if (refs.length === 0 && mountFailures.length > 0 && blocked.length === 0) {
     throw new Error(
       `No pages could be mounted. Failures: ${mountFailures
         .map((f) => `${f.url} (${f.reason})`)
@@ -427,11 +514,18 @@ async function collectDeliverable(
 }
 
 /**
- * The stream reports idle slightly before the session's queryable status catches
- * up; deleting immediately intermittently 400s with "cannot delete while running".
+ * A running session can't be deleted ("cannot delete while running"). After a
+ * normal finish that's only the brief lag between the stream's idle and the
+ * queryable status. After a cancel or error the agent is still mid-turn, so it
+ * gets interrupted and has to reach a safe boundary before it goes idle.
  */
+const SETTLE_POLLS_BEFORE_INTERRUPT = 10;
+const INTERRUPT_DEADLINE_MS = 60_000;
+
 async function deleteSessionWhenSettled(client: Anthropic, sessionId: string, receipt: BuildReceipt): Promise<void> {
-  for (let attempt = 0; attempt < 10; attempt++) {
+  const deadline = Date.now() + INTERRUPT_DEADLINE_MS;
+  let interrupted = false;
+  for (let attempt = 0; Date.now() < deadline; attempt++) {
     const session = await client.beta.sessions.retrieve(sessionId);
     if (session.status !== "running") {
       const usage = session.usage;
@@ -445,7 +539,11 @@ async function deleteSessionWhenSettled(client: Anthropic, sessionId: string, re
       }
       break;
     }
-    await new Promise((r) => setTimeout(r, 200));
+    if (!interrupted && attempt >= SETTLE_POLLS_BEFORE_INTERRUPT) {
+      await client.beta.sessions.events.send(sessionId, { events: [{ type: "user.interrupt" }] });
+      interrupted = true;
+    }
+    await new Promise((r) => setTimeout(r, interrupted ? 1000 : 200));
   }
   await client.beta.sessions.delete(sessionId);
 }
