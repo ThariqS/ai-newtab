@@ -38,7 +38,8 @@ browser.webRequest.onResponseStarted.addListener(
   (details) => {
     apiAddress = details.ip;
   },
-  { urls: ["https://api.anthropic.com/*"], tabId: -1 },
+  // Whichever engine is in use: the Claude engine talks to Anthropic, the OpenAI one to OpenAI.
+  { urls: ["https://api.anthropic.com/*", "https://api.openai.com/*"], tabId: -1 },
 );
 
 /** Keep content and links; drop scripts, styles, attributes and empty wrappers. */
