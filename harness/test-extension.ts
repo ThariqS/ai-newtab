@@ -203,6 +203,24 @@ try {
     domains.join(", "),
   );
 
+  // A saved receipt must be readable without making an agent request.
+  await page.evaluate(`chrome.storage.local.set({ apiKey: "test-only", autoRebuild: false,
+    homepageData: { code: "export default function PersonalizedHomepage() { return <div>Receipt fixture</div>; }", timestamp: "2026-10-08T12:00:00Z",
+      receipt: { startedAt: "2026-10-08T12:00:00Z", finishedAt: "2026-10-08T12:00:05Z", model: "claude-haiku-5-5", historyWindowDays: 7, totalSitesSeen: 12, domainsSent: ["example.com"], pagesUploaded: [{ url: "https://example.com", bytes: 42 }], pagesFailed: [{ url: "https://failed.test", reason: "timeout" }], usage: { inputTokens: 123, outputTokens: 45 } }
+    } })`);
+  await page.send("Page.reload");
+  await sleep(2500);
+  await page.evaluate(`Array.from(document.querySelectorAll("button")).find(b => b.textContent === "What this build read").click()`);
+  const receiptText = await page.evaluate<string>(`document.querySelector("dialog[open]").innerText`);
+  check("receipt opens at its summary", await page.evaluate<boolean>(`(() => { const d = document.querySelector("dialog[open]"); const h = d.querySelector("h2").getBoundingClientRect(); return h.top >= d.getBoundingClientRect().top; })()`));
+  check("receipt shows saved domains, uploads, failures and usage", ["example.com", "42 bytes", "timeout", "claude-haiku-5-5", "Duration: 5s", "Input: 123"].every(text => receiptText.includes(text)));
+  for (const width of [1280, 375]) {
+    await page.send("Emulation.setDeviceMetricsOverride", { width, height: 800, deviceScaleFactor: 1, mobile: false });
+    check(`receipt fits at ${width}px`, await page.evaluate<boolean>(`(() => { const d = document.querySelector("dialog"); const r = d.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && d.scrollWidth <= d.clientWidth; })()`));
+  }
+  await page.evaluate(`Array.from(document.querySelectorAll("dialog button")).find(b => b.textContent === "Close").click()`);
+  check("receipt closes", await page.evaluate<boolean>(`!document.querySelector("dialog[open]")`));
+
   page.close();
   browser.close();
 } catch (err) {

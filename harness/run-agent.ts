@@ -71,6 +71,8 @@ async function main() {
   }
   console.log(`\nNext: pnpm agent:verify`);
 
+  console.log(JSON.stringify(result.receipt, null, 2));
+
   process.exit(ok ? 0 : 1);
 }
 

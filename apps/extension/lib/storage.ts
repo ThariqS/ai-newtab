@@ -4,6 +4,7 @@ import {
   MODEL_CHOICES,
   STORAGE_KEYS as AGENT_KEYS,
   type HomepageModel,
+  type BuildReceipt,
   type KVStore,
 } from "@homepage/agent-core";
 
@@ -27,6 +28,7 @@ export const KEYS = {
 } as const;
 
 export interface Homepage {
+  receipt?: BuildReceipt;
   /** The agent's raw TSX source. */
   code: string;
   /** ISO timestamp of when it was built. */
@@ -86,7 +88,7 @@ export async function loadHomepage(): Promise<Homepage | undefined> {
   return extensionStore.get<Homepage>(KEYS.homepage);
 }
 
-export async function saveHomepage(code: string): Promise<void> {
-  const homepage: Homepage = { code, timestamp: new Date().toISOString() };
+export async function saveHomepage(code: string, receipt?: BuildReceipt): Promise<void> {
+  const homepage: Homepage = { code, receipt, timestamp: new Date().toISOString() };
   await extensionStore.set(KEYS.homepage, homepage);
 }
