@@ -17,7 +17,7 @@ export default function App() {
   const [blockedSites, setBlockedSites] = useState<string[]>(DEFAULT_BLOCKED_SITES);
   const [model, setModel] = useState<HomepageModel>(DEFAULT_MODEL);
   const [autoRebuild, setAutoRebuild] = useState(true);
-  /** Transpiled homepage, ready for Sandpack. */
+  /** Transpiled homepage, ready for the preview sandbox. */
   const [renderedCode, setRenderedCode] = useState<string | null>(null);
   /** A session left mid-flight, offered as "Resume interrupted build". */
   const [resumable, setResumable] = useState<string | null>(null);

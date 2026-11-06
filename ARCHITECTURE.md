@@ -57,9 +57,14 @@ build state, then streams phase/text/log deltas. Every open tab shows the same l
 run. A throttled snapshot is also mirrored to storage so a tab opened while the
 worker is asleep paints instantly.
 
-The finished component renders inside a Sandpack iframe
-(`entrypoints/newtab/components/HomepagePreview.tsx`): it is model-written code, so
-it runs sandboxed, not in the extension's own page.
+The finished component renders in an iframe onto the extension's own sandbox page
+(`entrypoints/preview.sandbox`, listed under `sandbox.pages` in the manifest). It is
+model-written code, so it runs there rather than in the extension's page: a sandbox
+page has an opaque origin, no `chrome.*` APIs, and no way to read storage, the API
+key included. The new tab transpiles the TSX (`lib/transpile.ts`) and posts it in;
+the sandbox evaluates it with only React available, exactly as
+`harness/verify-homepage.ts` checks it. React ships with the extension, so a new tab
+never waits on the network to show the homepage.
 
 ## Layout
 
@@ -77,12 +82,14 @@ apps/extension/           MV3 extension (WXT + React)
     background.ts         service worker: hosts BuildManager, alarm heartbeat
     scraper.content.ts    injected into scraped tabs: scroll, return HTML
     newtab/               the new-tab UI (thin client onto the worker)
+    preview.sandbox/      sandbox page that evaluates and renders the homepage
   lib/
     build-manager.ts      single-flight build host, broadcast, keepalive, reattach
     browser-bridge.ts     BrowserBridge over chrome.history / chrome.tabs
     history.ts            getHistory: group and rank chrome.history by domain
     scraper.ts            getPageHtml: load URLs in a background window, sanitize HTML
     protocol.ts           page ↔ worker messages and the five UI build steps
+    preview.ts            page → preview sandbox message
     auto-rebuild.ts       when to rebuild on a schedule
     storage.ts            every chrome.storage key, settings, saved homepage
     transpile.ts          TSX → JS for the preview
