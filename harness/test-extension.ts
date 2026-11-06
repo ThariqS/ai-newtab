@@ -7,6 +7,7 @@
  *   3. the worker answers `subscribe` on the build port with a snapshot,
  *   4. `startBuild` with no API key fails cleanly with an error message,
  *   5. `chrome.history` is readable, so the `history` permission is real.
+ *   6. a saved homepage renders in the preview sandbox, which can't see chrome.*.
  *
  * No API calls are made. Chrome 136+ ignores `--load-extension`, so the
  * extension is loaded over CDP's Extensions domain instead.
@@ -201,6 +202,47 @@ try {
     "chrome.history is readable (seeded domains returned)",
     domains.includes("news.ycombinator.com"),
     domains.join(", "),
+  );
+
+  // ---- 6. a saved homepage renders in the preview sandbox -------------------
+  // A placeholder key gets past the setup screen; auto-rebuild is off, so no build starts.
+  const homepage = `import React, { useState } from "react";
+export default function PersonalizedHomepage() {
+  const [edition] = useState("Harness edition");
+  return <h1>{edition}</h1>;
+}`;
+  await page.evaluate(`chrome.storage.local.set({
+    apiKey: "sk-ant-placeholder",
+    autoRebuild: false,
+    homepageData: { code: ${JSON.stringify(homepage)}, timestamp: new Date().toISOString() },
+  })`);
+  await page.send("Page.reload");
+
+  const previewUrl = `chrome-extension://${extId}/preview.html`;
+  let preview: any;
+  for (let i = 0; i < 40 && !preview; i++) {
+    await sleep(250);
+    preview = (await getJson("/json/list")).find((t: any) => t.type === "iframe" && t.url === previewUrl);
+  }
+  let rendered: { text: string; origin: string; chrome: boolean } | undefined;
+  if (preview) {
+    const frame = await cdp(preview.webSocketDebuggerUrl);
+    for (let i = 0; i < 20; i++) {
+      rendered = JSON.parse(
+        await frame.evaluate<string>(
+          `JSON.stringify({ text: document.body.innerText, origin: self.origin, chrome: typeof chrome !== "undefined" && !!chrome.storage })`,
+        ),
+      );
+      if (rendered!.text.includes("Harness edition")) break;
+      await sleep(250);
+    }
+    frame.close();
+  }
+  check("saved homepage renders in the preview sandbox", Boolean(rendered?.text.includes("Harness edition")), rendered?.text.slice(0, 50) ?? "no preview frame");
+  check(
+    "preview sandbox has an opaque origin and no chrome.storage",
+    rendered?.origin === "null" && rendered.chrome === false,
+    rendered && `origin=${rendered.origin}`,
   );
 
   page.close();

@@ -4,7 +4,7 @@
  *
  * Mirrors what the new-tab page does: transform TSX -> JS (sucrase, same as
  * apps/extension/lib/transpile.ts), then evaluate and server-render it. If this
- * passes, Sandpack will mount it.
+ * passes, the preview sandbox will mount it.
  *
  * Run: pnpm agent:verify [path]   (default: the last pnpm agent:run output)
  */

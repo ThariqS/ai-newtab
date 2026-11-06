@@ -17,5 +17,12 @@ export default defineConfig({
     ],
     // Needed to scrape arbitrary pages; also exempts api.anthropic.com from CORS.
     host_permissions: ["<all_urls>"],
+    content_security_policy: {
+      // The preview sandbox (entrypoints/preview.sandbox) evaluates the homepage, so it
+      // needs 'unsafe-eval'. No allow-same-origin: its origin stays opaque. Links leave
+      // the sandbox: in this tab on a click, or in an ordinary new tab.
+      sandbox:
+        "sandbox allow-scripts allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-top-navigation-by-user-activation; script-src 'self' 'unsafe-eval'; child-src 'self';",
+    },
   },
 });

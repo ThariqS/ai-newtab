@@ -16,7 +16,6 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.110.0",
-    "@codesandbox/sandpack-react": "^2.20.0",
     "@homepage/agent-core": "workspace:*",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
