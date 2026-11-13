@@ -82,6 +82,18 @@ export async function saveSetting<K extends "apiKey" | "systemPrompt" | "blocked
   await browser.storage.local.set({ [KEYS[key]]: value });
 }
 
+/**
+ * Swap in a different API key. A session and uploaded files left over from a
+ * build are owned by the old key's account, so the new key could neither
+ * resume nor clean them up; forget them rather than retrying a resume on every
+ * heartbeat. Cached agent and environment IDs are kept: ensureAgent and
+ * ensureEnvironment verify them and recreate them if the new key can't see them.
+ */
+export async function replaceApiKey(key: string): Promise<void> {
+  await browser.storage.local.remove([KEYS.activeSessionId, KEYS.uploadedFileIds]);
+  await saveSetting("apiKey", key);
+}
+
 export async function loadHomepage(): Promise<Homepage | undefined> {
   return extensionStore.get<Homepage>(KEYS.homepage);
 }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { DEFAULT_MODEL, DEFAULT_BLOCKED_SITES, type HomepageModel } from "@homepage/agent-core";
 import { BUILD_STEPS } from "@/lib/protocol";
-import { KEYS, extensionStore, loadHomepage, loadSettings, saveSetting } from "@/lib/storage";
+import { KEYS, extensionStore, loadHomepage, loadSettings, replaceApiKey, saveSetting } from "@/lib/storage";
 import { toRenderable } from "@/lib/transpile";
 import { ApiKeySetup } from "./components/ApiKeySetup";
 import { BuildProgress } from "./components/BuildProgress";
@@ -63,8 +63,16 @@ export default function App() {
   }, []);
 
   const savePrompt = useCallback(
-    async (prompt: string, sites: string[]) => {
-      await Promise.all([saveSetting("systemPrompt", prompt), saveSetting("blockedSites", sites)]);
+    async (prompt: string, sites: string[], newApiKey?: string) => {
+      await Promise.all([
+        saveSetting("systemPrompt", prompt),
+        saveSetting("blockedSites", sites),
+        newApiKey ? replaceApiKey(newApiKey) : undefined,
+      ]);
+      if (newApiKey) {
+        setApiKey(newApiKey);
+        setResumable(null);
+      }
       setBlockedSites(sites);
       setSystemPrompt(prompt);
       setShowSettings(false);
@@ -202,6 +210,7 @@ export default function App() {
         <SettingsModal
           initialPrompt={systemPrompt}
           blockedSites={blockedSites}
+          apiKey={apiKey}
           model={model}
           onChangeModel={changeModel}
           autoRebuild={autoRebuild}
