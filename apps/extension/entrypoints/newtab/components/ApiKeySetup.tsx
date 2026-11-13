@@ -1,9 +1,15 @@
 import { useState } from "react";
 import { btn } from "./ui";
 
+/** A cheap shape check before saving; the API is the real judge of validity. */
+export const looksLikeApiKey = (value: string) => value.trim().startsWith("sk-ant-");
+
+/** Enough of a key to tell which one is saved, without showing it. */
+export const maskApiKey = (key: string) => `sk-ant-…${key.slice(-4)}`;
+
 export function ApiKeySetup({ onSave }: { onSave: (key: string) => void }) {
   const [value, setValue] = useState("");
-  const valid = value.trim().startsWith("sk-ant-");
+  const valid = looksLikeApiKey(value);
 
   return (
     <div style={{ maxWidth: 520, margin: "12vh auto", padding: 24, fontFamily: "system-ui" }}>
